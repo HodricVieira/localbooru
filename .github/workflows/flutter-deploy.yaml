@@ -104,7 +104,14 @@ jobs:
         run: flutter pub get
       - name: Build artifacts
         run: flutter build apk --release
+      - name: Upload Release APK (Debug Signed)
+        if: ${{ env.KEYSTORE_FILE_BASE64 == '' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: localbooru-android-apk
+          path: build/app/outputs/apk/release/app-release.apk
       - name: Sign APK
+        if: ${{ env.KEYSTORE_FILE_BASE64 != '' }}
         uses: ilharp/sign-android-release@v1
         id: sign_app
         with:
@@ -115,6 +122,7 @@ jobs:
           keyPassword: ${{ secrets.KEYSTORE_KEY_PASSWORD }}
           buildToolsVersion: 35.0.0
       - name: Upload artifact
+        if: ${{ env.KEYSTORE_FILE_BASE64 != '' }}
         uses: actions/upload-artifact@v4
         with:
           name: localbooru-android

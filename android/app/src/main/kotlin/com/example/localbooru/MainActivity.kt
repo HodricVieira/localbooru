@@ -35,13 +35,14 @@ class MainActivity: FlutterFragmentActivity() {
                 "runInference" -> {
                     val modelPath = call.argument<String>("modelPath")
                     val imagePath = call.argument<String>("imagePath")
-                    if (modelPath == null || imagePath == null) {
-                        result.error("INVALID_ARGS", "modelPath and imagePath are required", null)
+                    val imageBytes = call.argument<ByteArray>("imageBytes")
+                    if (modelPath == null || (imagePath == null && imageBytes == null)) {
+                        result.error("INVALID_ARGS", "modelPath and imagePath/imageBytes are required", null)
                         return@setMethodCallHandler
                     }
                     executor.execute {
                         try {
-                            val probabilities = runOnnxInference(modelPath, imagePath)
+                            val probabilities = runOnnxInference(modelPath, imagePath, imageBytes)
                             runOnUiThread {
                                 result.success(probabilities)
                             }
@@ -84,11 +85,21 @@ class MainActivity: FlutterFragmentActivity() {
         return ortSession!!
     }
 
-    private fun prepareBitmap448(imagePath: String, targetSize: Int = 448): Bitmap {
+    private fun prepareBitmap448(imagePath: String?, imageBytes: ByteArray?, targetSize: Int = 448): Bitmap {
         val boundsOptions = BitmapFactory.Options().apply {
             inJustDecodeBounds = true
         }
-        BitmapFactory.decodeFile(imagePath, boundsOptions)
+        if (imageBytes != null && imageBytes.isNotEmpty()) {
+            BitmapFactory.decodeByteArray(imageBytes, 0, imageBytes.size, boundsOptions)
+        }
+        if ((boundsOptions.outWidth <= 0 || boundsOptions.outHeight <= 0) && imagePath != null) {
+            BitmapFactory.decodeFile(imagePath, boundsOptions)
+        }
+        if ((boundsOptions.outWidth <= 0 || boundsOptions.outHeight <= 0) && imagePath != null) {
+            File(imagePath).inputStream().use {
+                BitmapFactory.decodeStream(it, null, boundsOptions)
+            }
+        }
         if (boundsOptions.outWidth <= 0 || boundsOptions.outHeight <= 0) {
             throw IllegalArgumentException("Could not decode image bounds at $imagePath")
         }
@@ -104,8 +115,21 @@ class MainActivity: FlutterFragmentActivity() {
             inPreferredConfig = Bitmap.Config.ARGB_8888
         }
 
-        val original = BitmapFactory.decodeFile(imagePath, decodeOptions)
-            ?: throw IllegalArgumentException("Could not decode image at $imagePath")
+        var original: Bitmap? = null
+        if (imageBytes != null && imageBytes.isNotEmpty()) {
+            original = BitmapFactory.decodeByteArray(imageBytes, 0, imageBytes.size, decodeOptions)
+        }
+        if (original == null && imagePath != null) {
+            original = BitmapFactory.decodeFile(imagePath, decodeOptions)
+        }
+        if (original == null && imagePath != null) {
+            original = File(imagePath).inputStream().use {
+                BitmapFactory.decodeStream(it, null, decodeOptions)
+            }
+        }
+        if (original == null) {
+            throw IllegalArgumentException("Could not decode image at $imagePath")
+        }
         val bmp = Bitmap.createBitmap(targetSize, targetSize, Bitmap.Config.ARGB_8888)
         val canvas = Canvas(bmp)
         canvas.drawColor(Color.WHITE)
@@ -126,7 +150,7 @@ class MainActivity: FlutterFragmentActivity() {
         return bmp
     }
 
-    private fun runOnnxInference(modelPath: String, imagePath: String): List<Double> {
+    private fun runOnnxInference(modelPath: String, imagePath: String?, imageBytes: ByteArray?): List<Double> {
         val session = getOrCreateSession(modelPath)
         val env = ortEnv!!
 
@@ -136,12 +160,19 @@ class MainActivity: FlutterFragmentActivity() {
         val shape = inputNodeInfo?.shape ?: longArrayOf(1, 448, 448, 3)
 
         val targetSize = 448
-        val bmp = prepareBitmap448(imagePath, targetSize)
+        val bmp = prepareBitmap448(imagePath, imageBytes, targetSize)
         val pixels = IntArray(targetSize * targetSize)
         bmp.getPixels(pixels, 0, targetSize, 0, 0, targetSize, targetSize)
         bmp.recycle()
 
-        val isChannelsFirst = shape.size == 4 && shape[1] == 3L
+        val isChannelsFirst = (shape.size == 4 && shape[1] == 3L) || (shape.size == 3 && shape[0] == 3L)
+        val tensorShape: LongArray = when (shape.size) {
+            1 -> longArrayOf((targetSize * targetSize * 3).toLong())
+            3 -> if (isChannelsFirst) longArrayOf(3, targetSize.toLong(), targetSize.toLong())
+                 else longArrayOf(targetSize.toLong(), targetSize.toLong(), 3)
+            else -> if (isChannelsFirst) longArrayOf(1, 3, targetSize.toLong(), targetSize.toLong())
+                    else longArrayOf(1, targetSize.toLong(), targetSize.toLong(), 3)
+        }
 
         val inputTensor: OnnxTensor = if (isUint8) {
             // WaifuTagger -mobile ONNX format: UINT8 RGB [1, 448, 448, 3] (or [1, 3, 448, 448])
@@ -157,8 +188,6 @@ class MainActivity: FlutterFragmentActivity() {
                         byteBuffer.put(v.toByte())
                     }
                 }
-                byteBuffer.rewind()
-                OnnxTensor.createTensor(env, byteBuffer, longArrayOf(1, 3, targetSize.toLong(), targetSize.toLong()), ai.onnxruntime.OnnxJavaType.UINT8)
             } else {
                 for (pixel in pixels) {
                     val r = (pixel shr 16) and 0xFF
@@ -168,9 +197,9 @@ class MainActivity: FlutterFragmentActivity() {
                     byteBuffer.put(g.toByte())
                     byteBuffer.put(b.toByte())
                 }
-                byteBuffer.rewind()
-                OnnxTensor.createTensor(env, byteBuffer, longArrayOf(1, targetSize.toLong(), targetSize.toLong(), 3), ai.onnxruntime.OnnxJavaType.UINT8)
             }
+            byteBuffer.rewind()
+            OnnxTensor.createTensor(env, byteBuffer, tensorShape, ai.onnxruntime.OnnxJavaType.UINT8)
         } else {
             // Standard SmilingWolf WD14 ONNX format: FLOAT32 BGR [1, 448, 448, 3] (or [1, 3, 448, 448])
             val floatBuffer = ByteBuffer.allocateDirect(1 * targetSize * targetSize * 3 * 4)
@@ -187,8 +216,6 @@ class MainActivity: FlutterFragmentActivity() {
                         floatBuffer.put(v)
                     }
                 }
-                floatBuffer.rewind()
-                OnnxTensor.createTensor(env, floatBuffer, longArrayOf(1, 3, targetSize.toLong(), targetSize.toLong()))
             } else {
                 for (pixel in pixels) {
                     val r = ((pixel shr 16) and 0xFF).toFloat()
@@ -198,14 +225,24 @@ class MainActivity: FlutterFragmentActivity() {
                     floatBuffer.put(g)
                     floatBuffer.put(r)
                 }
-                floatBuffer.rewind()
-                OnnxTensor.createTensor(env, floatBuffer, longArrayOf(1, targetSize.toLong(), targetSize.toLong(), 3))
             }
+            floatBuffer.rewind()
+            OnnxTensor.createTensor(env, floatBuffer, tensorShape)
         }
 
         inputTensor.use { tensor ->
             session.run(Collections.singletonMap(inputName, tensor)).use { results ->
-                val outputValue = results[0].value
+                val firstResult = results[0]
+                if (firstResult is OnnxTensor) {
+                    val fb = firstResult.floatBuffer
+                    if (fb != null) {
+                        fb.rewind()
+                        val arr = FloatArray(fb.remaining())
+                        fb.get(arr)
+                        return arr.map { it.toDouble() }
+                    }
+                }
+                val outputValue = firstResult.value
                 val probs: FloatArray = when (outputValue) {
                     is Array<*> -> (outputValue[0] as FloatArray)
                     is FloatArray -> outputValue

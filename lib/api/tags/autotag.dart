@@ -169,34 +169,100 @@ Future<void> _downloadFileWithProgress(String url, String savePath, void Functio
 }
 
 String _normalizeTag(String rawTag) {
-    return rawTag.trim().replaceAll(" ", "_");
+    return rawTag
+        .trim()
+        .replaceAll(r"\(", "(")
+        .replaceAll(r"\)", ")")
+        .replaceAll(" ", "_");
+}
+
+int _parseCategory(dynamic rawCategory) {
+    if (rawCategory is int) return rawCategory;
+    if (rawCategory is num) return rawCategory.toInt();
+    final str = rawCategory?.toString().trim().toLowerCase() ?? "0";
+    final asInt = int.tryParse(str);
+    if (asInt != null) return asInt;
+    return switch (str) {
+        "artist" => 1,
+        "copyright" || "series" => 3,
+        "character" || "characters" => 4,
+        "meta" => 5,
+        "rating" || "ratings" => 9,
+        _ => 0,
+    };
 }
 
 String? _cachedVocabPath;
 List<_TagVocabEntry>? _cachedVocabEntries;
 
 Future<List<_TagVocabEntry>> _loadModelVocabulary(File tagsFile) async {
-    if (_cachedVocabPath == tagsFile.path && _cachedVocabEntries != null) {
+    if (_cachedVocabPath == tagsFile.path &&
+        _cachedVocabEntries != null &&
+        _cachedVocabEntries!.isNotEmpty) {
         return _cachedVocabEntries!;
     }
     final content = await tagsFile.readAsString();
-    List<_TagVocabEntry> ResultEntries;
+    List<_TagVocabEntry> resultEntries = [];
     if (tagsFile.path.endsWith(".json")) {
-        final Map<String, dynamic> decoded = jsonDecode(content);
-        final List<_TagVocabEntry> entries = List.generate(
-            decoded.length,
-            (_) => _TagVocabEntry(name: "", category: 0),
-        );
-        decoded.forEach((key, value) {
-            final idx = int.tryParse(key);
-            if (idx != null && idx >= 0 && idx < entries.length && value is List && value.length >= 2) {
-                entries[idx] = _TagVocabEntry(
-                    name: _normalizeTag(value[0].toString()),
-                    category: int.tryParse(value[1].toString()) ?? 0,
-                );
+        final dynamic decoded = jsonDecode(content);
+        if (decoded is Map) {
+            int maxIdx = decoded.length - 1;
+            for (final key in decoded.keys) {
+                final idx = int.tryParse(key.toString());
+                if (idx != null && idx > maxIdx) maxIdx = idx;
             }
-        });
-        ResultEntries = entries;
+            final List<_TagVocabEntry> entries = List.generate(
+                maxIdx + 1,
+                (_) => _TagVocabEntry(name: "", category: 0),
+            );
+            int sequentialIdx = 0;
+            decoded.forEach((key, value) {
+                final idx = int.tryParse(key.toString()) ?? sequentialIdx;
+                sequentialIdx++;
+                if (idx >= 0 && idx < entries.length) {
+                    if (value is List && value.isNotEmpty) {
+                        entries[idx] = _TagVocabEntry(
+                            name: _normalizeTag(value[0].toString()),
+                            category: value.length >= 2 ? _parseCategory(value[1]) : 0,
+                        );
+                    } else if (value is Map) {
+                        final name = value["name"] ?? value["label"] ?? value["tag"] ?? "";
+                        final cat = value["category"] ?? value["type"] ?? 0;
+                        entries[idx] = _TagVocabEntry(
+                            name: _normalizeTag(name.toString()),
+                            category: _parseCategory(cat),
+                        );
+                    } else if (value is String) {
+                        entries[idx] = _TagVocabEntry(
+                            name: _normalizeTag(value),
+                            category: 0,
+                        );
+                    }
+                }
+            });
+            resultEntries = entries;
+        } else if (decoded is List) {
+            resultEntries = decoded.map((value) {
+                if (value is List && value.isNotEmpty) {
+                    return _TagVocabEntry(
+                        name: _normalizeTag(value[0].toString()),
+                        category: value.length >= 2 ? _parseCategory(value[1]) : 0,
+                    );
+                } else if (value is Map) {
+                    final name = value["name"] ?? value["label"] ?? value["tag"] ?? "";
+                    final cat = value["category"] ?? value["type"] ?? 0;
+                    return _TagVocabEntry(
+                        name: _normalizeTag(name.toString()),
+                        category: _parseCategory(cat),
+                    );
+                } else {
+                    return _TagVocabEntry(
+                        name: _normalizeTag(value.toString()),
+                        category: 0,
+                    );
+                }
+            }).toList();
+        }
     } else {
         // selected_tags.csv format: tag_id,name,category,count
         final lines = const LineSplitter().convert(content);
@@ -208,15 +274,17 @@ Future<List<_TagVocabEntry>> _loadModelVocabulary(File tagsFile) async {
             if (parts.length >= 3) {
                 entries.add(_TagVocabEntry(
                     name: _normalizeTag(parts[1]),
-                    category: int.tryParse(parts[2]) ?? 0,
+                    category: _parseCategory(parts[2]),
                 ));
             }
         }
-        ResultEntries = entries;
+        resultEntries = entries;
     }
-    _cachedVocabPath = tagsFile.path;
-    _cachedVocabEntries = ResultEntries;
-    return ResultEntries;
+    if (resultEntries.any((e) => e.name.isNotEmpty)) {
+        _cachedVocabPath = tagsFile.path;
+        _cachedVocabEntries = resultEntries;
+    }
+    return resultEntries;
 }
 
 Rating? _mapWdRating(Map<String, double> ratingScores) {
@@ -277,16 +345,31 @@ Future<AutoTagDetailedResult> _runOfflineWaifuTagger(
     final tagsFile = File(p.join(dir.path, modelInfo.tagsFilename));
 
     final vocab = await _loadModelVocabulary(tagsFile);
+    Uint8List? imageBytes;
+    try {
+        imageBytes = await imageFile.readAsBytes();
+    } catch (_) {}
+
     final List<dynamic>? rawProbs = await _waifuTaggerChannel.invokeMethod<List<dynamic>>(
         'runInference',
         {
             'modelPath': onnxPath,
             'imagePath': imageFile.path,
+            if (imageBytes != null) 'imageBytes': imageBytes,
         },
     );
 
     if (rawProbs == null || rawProbs.isEmpty) {
         throw "O modelo ONNX retornou resultado vazio.";
+    }
+
+    bool needsSigmoid = false;
+    for (int i = 0; i < math.min(rawProbs.length, 50); i++) {
+        final v = (rawProbs[i] as num).toDouble();
+        if (v < -0.001 || v > 1.001) {
+            needsSigmoid = true;
+            break;
+        }
     }
 
     final AccuracyTagList allTags = {};
@@ -300,8 +383,13 @@ Future<AutoTagDetailedResult> _runOfflineWaifuTagger(
     };
 
     final int count = rawProbs.length < vocab.length ? rawProbs.length : vocab.length;
+    final List<({ _TagVocabEntry entry, double prob })> scoredEntries = [];
+
     for (int i = 0; i < count; i++) {
-        final double prob = (rawProbs[i] as num).toDouble();
+        double prob = (rawProbs[i] as num).toDouble();
+        if (needsSigmoid) {
+            prob = 1.0 / (1.0 + math.exp(-prob));
+        }
         final entry = vocab[i];
         if (entry.name.isEmpty || Metatag.isMetatag(entry.name)) continue;
 
@@ -311,6 +399,7 @@ Future<AutoTagDetailedResult> _runOfflineWaifuTagger(
         }
 
         allTags[entry.name] = prob;
+        scoredEntries.add((entry: entry, prob: prob));
         if (prob >= filterThreshold) {
             switch (entry.category) {
                 case 1:
@@ -325,7 +414,25 @@ Future<AutoTagDetailedResult> _runOfflineWaifuTagger(
         }
     }
 
-    // Also cross-check with current booru's known tag types for generic tags
+    // Fallback if threshold was too high for this image: pick top tags with prob >= 0.15
+    if (separated.values.every((list) => list.isEmpty) && scoredEntries.isNotEmpty) {
+        scoredEntries.sort((a, b) => b.prob.compareTo(a.prob));
+        for (final item in scoredEntries.take(15)) {
+            if (item.prob < 0.15) break;
+            switch (item.entry.category) {
+                case 1:
+                    separated["artist"]!.add(item.entry.name);
+                case 3:
+                    separated["copyright"]!.add(item.entry.name);
+                case 4:
+                    separated["character"]!.add(item.entry.name);
+                default:
+                    separated["generic"]!.add(item.entry.name);
+            }
+        }
+    }
+
+    // Cross-check with current booru's known tag types for generic tags
     try {
         final booru = await getCurrentBooru();
         final reseparated = await booru.separateTagsByType(separated["generic"]!);
@@ -352,13 +459,15 @@ Future<AutoTagDetailedResult> _runOnlineWdTaggerSpace(
     double filterThreshold,
 ) async {
     const String baseUrl = "https://smilingwolf-wd-tagger.hf.space";
+    final bytes = await file.readAsBytes();
+    final filename = p.basename(file.path);
 
     // Step 1: Upload file to Gradio Space
     final uploadReq = http.MultipartRequest("POST", Uri.parse("$baseUrl/gradio_api/upload"));
     uploadReq.files.add(http.MultipartFile.fromBytes(
         "files",
-        await file.readAsBytes(),
-        filename: p.basename(file.path),
+        bytes,
+        filename: filename,
     ));
     final uploadRes = await http.Response.fromStream(
         await uploadReq.send().timeout(const Duration(seconds: 30)),
@@ -378,6 +487,8 @@ Future<AutoTagDetailedResult> _runOnlineWdTaggerSpace(
             "data": [
                 {
                     "path": remotePath,
+                    "orig_name": filename,
+                    "size": bytes.length,
                     "meta": {"_type": "gradio.FileData"}
                 },
                 modelInfo.hfRepo,
@@ -400,9 +511,15 @@ Future<AutoTagDetailedResult> _runOnlineWdTaggerSpace(
     ).timeout(const Duration(seconds: 45));
 
     List<dynamic>? dataPayload;
+    bool hasErrorEvent = false;
     for (final line in const LineSplitter().convert(sseRes.body)) {
-        if (line.startsWith("data: ")) {
+        if (line.startsWith("event: error")) {
+            hasErrorEvent = true;
+        } else if (line.startsWith("data: ")) {
             final jsonPart = line.substring(6).trim();
+            if (hasErrorEvent) {
+                throw "Erro retornado pelo WD-Tagger Space: $jsonPart";
+            }
             if (jsonPart.isNotEmpty && jsonPart != "null") {
                 final decoded = jsonDecode(jsonPart);
                 if (decoded is List) {
@@ -412,7 +529,7 @@ Future<AutoTagDetailedResult> _runOnlineWdTaggerSpace(
         }
     }
 
-    if (dataPayload == null || dataPayload.length < 4) {
+    if (dataPayload == null || dataPayload.isEmpty) {
         throw "Resposta inválida do WD-Tagger Space";
     }
 
@@ -428,28 +545,62 @@ Future<AutoTagDetailedResult> _runOnlineWdTaggerSpace(
     };
 
     void parseConfidenceObject(dynamic obj, String targetCategory) {
-        if (obj is Map && obj["confidences"] is List) {
-            for (final item in obj["confidences"]) {
-                if (item is Map && item["label"] != null && item["confidence"] != null) {
-                    final String tag = _normalizeTag(item["label"].toString());
-                    final double conf = (item["confidence"] as num).toDouble();
-                    if (tag.isEmpty || Metatag.isMetatag(tag)) continue;
-                    if (targetCategory == "rating") {
-                        ratingScores[tag] = conf;
-                    } else {
-                        allTags[tag] = conf;
-                        if (conf >= filterThreshold) {
-                            separated[targetCategory]!.add(tag);
+        if (obj is Map) {
+            if (obj["confidences"] is List) {
+                for (final item in obj["confidences"]) {
+                    if (item is Map && item["label"] != null && item["confidence"] != null) {
+                        final String tag = _normalizeTag(item["label"].toString());
+                        final double conf = (item["confidence"] as num).toDouble();
+                        if (tag.isEmpty || Metatag.isMetatag(tag)) continue;
+                        if (targetCategory == "rating") {
+                            ratingScores[tag] = conf;
+                        } else {
+                            allTags[tag] = conf;
+                            if (conf >= filterThreshold && !separated[targetCategory]!.contains(tag)) {
+                                separated[targetCategory]!.add(tag);
+                            }
                         }
                     }
                 }
+            } else {
+                // Direct map of {tag: confidence}
+                obj.forEach((k, v) {
+                    if (k == "label" || k == "confidences") return;
+                    if (v is num) {
+                        final String tag = _normalizeTag(k.toString());
+                        final double conf = v.toDouble();
+                        if (tag.isEmpty || Metatag.isMetatag(tag)) return;
+                        if (targetCategory == "rating") {
+                            ratingScores[tag] = conf;
+                        } else {
+                            allTags[tag] = conf;
+                            if (conf >= filterThreshold && !separated[targetCategory]!.contains(tag)) {
+                                separated[targetCategory]!.add(tag);
+                            }
+                        }
+                    }
+                });
             }
         }
     }
 
-    parseConfidenceObject(dataPayload[1], "rating");
-    parseConfidenceObject(dataPayload[2], "character");
-    parseConfidenceObject(dataPayload[3], "generic");
+    if (dataPayload.length > 1) parseConfidenceObject(dataPayload[1], "rating");
+    if (dataPayload.length > 2) parseConfidenceObject(dataPayload[2], "character");
+    if (dataPayload.length > 3) parseConfidenceObject(dataPayload[3], "generic");
+
+    // Also parse dataPayload[0] (sorted_general_strings comma-separated string)
+    if (dataPayload[0] is String && (dataPayload[0] as String).trim().isNotEmpty) {
+        final rawString = dataPayload[0] as String;
+        for (final part in rawString.split(",")) {
+            final tag = _normalizeTag(part);
+            if (tag.isEmpty || Metatag.isMetatag(tag)) continue;
+            allTags.putIfAbsent(tag, () => filterThreshold);
+            if (!separated["generic"]!.contains(tag) &&
+                !separated["character"]!.contains(tag)) {
+                separated["generic"]!.add(tag);
+            }
+        }
+    }
 
     try {
         final booru = await getCurrentBooru();
@@ -472,15 +623,35 @@ Future<AutoTagDetailedResult> _runOnlineWdTaggerSpace(
 }
 
 Future<AutoTagDetailedResult> _runDanbooruFallback(File file, double filterThreshold) async {
-    http.MultipartRequest req = http.MultipartRequest("POST", Uri.parse("https://autotagger.donmai.us/evaluate"));
-    req.headers['Content-Type'] = 'application/json; charset=UTF-8';
+    final req = http.MultipartRequest("POST", Uri.parse("https://autotagger.donmai.us/evaluate"));
     req.files.add(http.MultipartFile.fromBytes("file", await file.readAsBytes(), filename: p.basename(file.path)));
     req.fields["format"] = "json";
-    http.Response response = await http.Response.fromStream(await req.send());
+    final response = await http.Response.fromStream(
+        await req.send().timeout(const Duration(seconds: 30)),
+    );
+    if (response.statusCode < 200 || response.statusCode >= 300) {
+        throw "Danbooru Autotagger falhou (HTTP ${response.statusCode})";
+    }
 
-    final AccuracyTagList tags = AccuracyTagList.from(jsonDecode(response.body)[0]["tags"])
-        ..removeWhere((tag, _) => Metatag.isMetatag(tag));
-    final filtered = filterAccurateResults(tags, filterThreshold);
+    final decoded = jsonDecode(response.body);
+    if (decoded is! List || decoded.isEmpty || decoded[0]["tags"] is! Map) {
+        throw "Resposta inválida do Danbooru Autotagger";
+    }
+
+    final AccuracyTagList tags = (decoded[0]["tags"] as Map).map(
+        (k, v) => MapEntry(_normalizeTag(k.toString()), (v as num).toDouble()),
+    )..removeWhere((tag, _) => tag.isEmpty || Metatag.isMetatag(tag));
+
+    var filtered = filterAccurateResults(tags, filterThreshold);
+    if (filtered.isEmpty && tags.isNotEmpty) {
+        // Danbooru's ResNet autotagger outputs lower scores (upstream default is 0.15)
+        filtered = filterAccurateResults(tags, math.min(filterThreshold, 0.15));
+    }
+    if (filtered.isEmpty && tags.isNotEmpty) {
+        final sorted = tags.entries.toList()..sort((a, b) => b.value.compareTo(a.value));
+        filtered = Map.fromEntries(sorted.take(15));
+    }
+
     final booru = await getCurrentBooru();
     final separated = await booru.separateTagsByType(filtered.keys.toList());
 

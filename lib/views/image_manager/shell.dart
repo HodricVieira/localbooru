@@ -127,10 +127,12 @@ class _ImageManagerShellState extends State<ImageManagerShell> {
     bool hasError() => errorOnPages.any((element) => element,);
 
     void addMultipleImages(List<File> files) {
+        if (files.isEmpty) return;
         for (final file in files) {
             preset.pages!.add(PresetImage(image: file, key: UniqueKey()));
             errorOnPages.add(true);
         }
+        setState(() {});
     }
 
     void compressAllImages() async {
@@ -147,6 +149,7 @@ class _ImageManagerShellState extends State<ImageManagerShell> {
     }
 
     Future<void> autoTagAllImages() async {
+        if (progressAutoTagImages != null) return;
         final prefs = await SharedPreferences.getInstance();
         final double threshold = prefs.getDouble("autotag_accuracy") ?? settingsDefaults["autotag_accuracy"];
         final total = preset.pages!.where((image) => image.image != null).length;
@@ -158,6 +161,9 @@ class _ImageManagerShellState extends State<ImageManagerShell> {
         });
 
         int processed = 0;
+        int failed = 0;
+        String? lastError;
+
         for (final (index, presetImage) in preset.pages!.indexed) {
             if (presetImage.image == null) continue;
             if (!mounted) return;
@@ -170,10 +176,19 @@ class _ImageManagerShellState extends State<ImageManagerShell> {
                 Map<String, List<String>> mergedTags = {};
                 for (final type in ["generic", "artist", "character", "copyright", "species"]) {
                     final set = <String>{
-                        ...(existingTags[type] ?? []).where((e) => e.isNotEmpty),
+                        ...(existingTags[type] ?? []).where((e) => e.isNotEmpty && e != "tagme"),
                         ...(detailed.separatedTags[type] ?? []).where((e) => e.isNotEmpty),
                     };
                     mergedTags[type] = set.toList();
+                }
+                if (mergedTags.values.every((list) => list.isEmpty) && detailed.allTags.isNotEmpty) {
+                    final sorted = detailed.allTags.entries.toList()
+                        ..sort((a, b) => b.value.compareTo(a.value));
+                    mergedTags["generic"] = sorted
+                        .where((e) => e.value >= 0.10)
+                        .take(15)
+                        .map((e) => e.key)
+                        .toList();
                 }
                 if (mergedTags.values.every((list) => list.isEmpty)) {
                     mergedTags["generic"] = ["tagme"];
@@ -184,6 +199,8 @@ class _ImageManagerShellState extends State<ImageManagerShell> {
                     errorOnPages[index + 1] = false;
                 }
             } catch (e) {
+                failed++;
+                lastError = e.toString();
                 debugPrint("AutoTag failed on ${presetImage.image!.path}: $e");
                 preset.pages![index].tags ??= {"generic": ["tagme"]};
                 if (index + 1 < errorOnPages.length) {
@@ -203,8 +220,14 @@ class _ImageManagerShellState extends State<ImageManagerShell> {
                 progressAutoTagImages = null;
                 statusAutoTagImages = null;
             });
+            final message = failed == 0
+                ? "Auto-tagging concluído para $processed imagens!"
+                : "Auto-tagging: ${processed - failed}/$processed concluídas ($failed falharam: $lastError)";
             ScaffoldMessenger.of(context).showSnackBar(
-                SnackBar(content: Text("Auto-tagging concluído para $processed imagens!")),
+                SnackBar(
+                    content: Text(message),
+                    duration: Duration(seconds: failed == 0 ? 4 : 8),
+                ),
             );
         }
     }
@@ -270,12 +293,12 @@ class _ImageManagerShellState extends State<ImageManagerShell> {
                             // ),
                             orientation == Orientation.portrait ? IconButton(
                                 icon: const Icon(Icons.check),
-                                onPressed: !isSaving && !hasError() ? saveImages : null,
+                                onPressed: !isSaving && progressAutoTagImages == null && !hasError() ? saveImages : null,
                                 tooltip: !hasError() ? "Done" : null,
                             ) : TextButton.icon(
                                 icon: const Icon(Icons.check),
                                 label: const Text("Done"),
-                                onPressed: !isSaving && !hasError() ? saveImages : null,
+                                onPressed: !isSaving && progressAutoTagImages == null && !hasError() ? saveImages : null,
                             )
                         ],
                         bottom: isSaving ? AppBarLinearProgressIndicator(value: savedImages != 0 ? savedImages / preset.pages!.length : null,) : null,
@@ -315,7 +338,9 @@ class _ImageManagerShellState extends State<ImageManagerShell> {
                                                 icon: const Icon(Icons.close),
                                                 onPressed: () {
                                                     preset.pages!.removeAt(index);
-                                                    errorOnPages.removeAt(index);
+                                                    if (index + 1 < errorOnPages.length) {
+                                                        errorOnPages.removeAt(index + 1);
+                                                    }
                                                     setState(() => imagePage = imagePage >= index ? imagePage - 1 : imagePage);
                                                 },
                                             ),
@@ -396,10 +421,6 @@ class _ImageManagerShellState extends State<ImageManagerShell> {
                                                 );
                                                 if(url == null) return;
                                                 final downloadedPreset = await importImageFromURL(url);
-                                                // final images = await openSelectionDialog(
-                                                //     context: context,
-                                                //     excludeImages: preset.pages!.where((imagePreset) => imagePreset.replaceID != null,).map((imagePreset) => imagePreset.replaceID!).toList()
-                                                // );
                                                 if(downloadedPreset is PresetImage) {
                                                     preset.pages!.add(downloadedPreset);
                                                     errorOnPages.add(false);
@@ -407,6 +428,7 @@ class _ImageManagerShellState extends State<ImageManagerShell> {
                                                     final presets = downloadedPreset.pages;
                                                     if(presets == null) return;
                                                     preset.pages!.addAll(presets);
+                                                    errorOnPages.addAll(List.generate(presets.length, (_) => false));
                                                 }
                                                 setState(() => imagePage = preset.pages!.length - 1);
                                                 _scaffoldKey.currentState!.closeEndDrawer();
@@ -454,6 +476,12 @@ class _ImageManagerShellState extends State<ImageManagerShell> {
                                 onChanged: (imagePreset) => setState(() => preset.pages![imagePage] = imagePreset),
                                 onErrorUpdate: (containsError) => setState(() => errorOnPages[imagePage + 1] = containsError),
                                 onMultipleImagesAdded: addMultipleImages,
+                                onAutoTagAll: preset.pages!.length > 1
+                                    ? () async {
+                                        setState(() => imagePage = -1);
+                                        await autoTagAllImages();
+                                    }
+                                    : null,
                                 showRelatedImagesCard: !isCorelated,
                             ),
                     ),

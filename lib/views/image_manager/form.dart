@@ -16,7 +16,16 @@ import 'package:localbooru/views/image_manager/components/tagfield.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 class ImageManagerForm extends StatefulWidget {
-    const ImageManagerForm({super.key, this.preset, required this.onChanged, this.onMultipleImagesAdded, this.onErrorUpdate, this.showRelatedImagesCard = true, this.updateNotifier});
+    const ImageManagerForm({
+        super.key,
+        this.preset,
+        required this.onChanged,
+        this.onMultipleImagesAdded,
+        this.onAutoTagAll,
+        this.onErrorUpdate,
+        this.showRelatedImagesCard = true,
+        this.updateNotifier,
+    });
 
     final PresetImage? preset;
     final bool showRelatedImagesCard;
@@ -24,6 +33,7 @@ class ImageManagerForm extends StatefulWidget {
     final void Function(PresetImage preset) onChanged;
     final void Function(bool hasError)? onErrorUpdate;
     final void Function(List<File> files)? onMultipleImagesAdded;
+    final Future<void> Function()? onAutoTagAll;
     final ChangeNotifier? updateNotifier;
 
     @override
@@ -75,7 +85,13 @@ class _ImageManagerFormState extends State<ImageManagerForm> {
         super.dispose();
     }
 
-    void updateListenable() {if(widget.preset != null) updateInformation(widget.preset!);}
+    void updateListenable() {
+        if (mounted && widget.preset != null) {
+            setState(() {
+                updateInformation(widget.preset!);
+            });
+        }
+    }
 
     void updateInformation(PresetImage preset) {
         if(preset.image != null) loadedImage = preset.image!.path;
@@ -89,6 +105,12 @@ class _ImageManagerFormState extends State<ImageManagerForm> {
             characterTagController.text = preset.tags!["character"]?.join(" ") ?? "";
             copyrightTagController.text = preset.tags!["copyright"]?.join(" ") ?? "";
             speciesTagController.text = preset.tags!["species"]?.join(" ") ?? "";
+        } else {
+            tagController.text = "";
+            artistTagController.text = "";
+            characterTagController.text = "";
+            copyrightTagController.text = "";
+            speciesTagController.text = "";
         }
     }
 
@@ -122,7 +144,7 @@ class _ImageManagerFormState extends State<ImageManagerForm> {
 
             String mergeUnique(String existing, List<String>? added) {
                 final set = <String>{
-                    ...existing.split(" ").where((e) => e.isNotEmpty),
+                    ...existing.split(" ").where((e) => e.isNotEmpty && e != "tagme"),
                     ...(added ?? []).where((e) => e.isNotEmpty),
                 };
                 return set.join(" ");
@@ -208,15 +230,31 @@ class _ImageManagerFormState extends State<ImageManagerForm> {
                             crossAxisAlignment: WrapCrossAlignment.center,
                             children: [
                                 const SmallHeader("Tags", padding: EdgeInsets.zero),
-                                TextButton(
-                                    onPressed: (loadedImage.isEmpty || isGeneratingTags) ? null : fetchTags, 
-                                    child: Wrap(
-                                        spacing: 8,
-                                        children: [
-                                            const Icon(CupertinoIcons.sparkles),
-                                            isGeneratingTags ? const Text("Generating...") : const Text("Generate tags")
-                                        ],
-                                    )
+                                Wrap(
+                                    spacing: 4,
+                                    children: [
+                                        TextButton(
+                                            onPressed: (loadedImage.isEmpty || isGeneratingTags) ? null : fetchTags, 
+                                            child: Wrap(
+                                                spacing: 8,
+                                                children: [
+                                                    const Icon(CupertinoIcons.sparkles),
+                                                    isGeneratingTags ? const Text("Generating...") : const Text("Generate tags")
+                                                ],
+                                            )
+                                        ),
+                                        if (widget.onAutoTagAll != null)
+                                            TextButton(
+                                                onPressed: isGeneratingTags ? null : () => widget.onAutoTagAll!(),
+                                                child: const Wrap(
+                                                    spacing: 6,
+                                                    children: [
+                                                        Icon(Icons.auto_awesome_motion),
+                                                        Text("Auto-tag all"),
+                                                    ],
+                                                ),
+                                            ),
+                                    ],
                                 )
                             ],
                         ),

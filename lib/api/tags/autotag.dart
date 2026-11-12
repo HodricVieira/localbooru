@@ -102,7 +102,10 @@ Future<bool> isWaifuTaggerModelDownloaded(WaifuTaggerModelInfo model) async {
     final dir = await getWaifuTaggerModelDirectory();
     final onnxFile = File(p.join(dir.path, model.onnxFilename));
     final tagsFile = File(p.join(dir.path, model.tagsFilename));
-    return await onnxFile.exists() && await tagsFile.exists() && await onnxFile.length() > 1024;
+    return await onnxFile.exists() &&
+        await tagsFile.exists() &&
+        await onnxFile.length() > 50 * 1024 * 1024 &&
+        await tagsFile.length() > 1024;
 }
 
 Future<void> deleteWaifuTaggerModel(WaifuTaggerModelInfo model) async {
@@ -159,6 +162,10 @@ Future<void> _downloadFileWithProgress(String url, String savePath, void Functio
             }
         }
         await sink.close();
+        if (totalBytes > 0 && receivedBytes < totalBytes) {
+            if (await tempFile.exists()) await tempFile.delete();
+            throw "Download incompleto ($receivedBytes de $totalBytes bytes recebidos)";
+        }
         if (await File(savePath).exists()) {
             await File(savePath).delete();
         }
@@ -345,17 +352,15 @@ Future<AutoTagDetailedResult> _runOfflineWaifuTagger(
     final tagsFile = File(p.join(dir.path, modelInfo.tagsFilename));
 
     final vocab = await _loadModelVocabulary(tagsFile);
-    Uint8List? imageBytes;
-    try {
-        imageBytes = await imageFile.readAsBytes();
-    } catch (_) {}
+    if (!await imageFile.exists()) {
+        throw "Arquivo de imagem não encontrado: ${imageFile.path}";
+    }
 
     final List<dynamic>? rawProbs = await _waifuTaggerChannel.invokeMethod<List<dynamic>>(
         'runInference',
         {
             'modelPath': onnxPath,
             'imagePath': imageFile.path,
-            if (imageBytes != null) 'imageBytes': imageBytes,
         },
     );
 

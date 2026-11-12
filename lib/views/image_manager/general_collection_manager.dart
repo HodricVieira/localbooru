@@ -1,9 +1,24 @@
+import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
 import 'package:localbooru/api/preset/index.dart';
 import 'package:localbooru/components/multi_image_display.dart';
 
 class GeneralCollectionManagerScreen extends StatefulWidget {
-    const GeneralCollectionManagerScreen({super.key, this.displayImages, this.onCorelatedChanged, this.corelated, this.saveCollectionToggle, this.onSaveCollectionToggle, required this.collection, this.onErrorChange, this.onMultiCompress, this.progressMultiCompress});
+    const GeneralCollectionManagerScreen({
+        super.key,
+        this.displayImages,
+        this.onCorelatedChanged,
+        this.corelated,
+        this.saveCollectionToggle,
+        this.onSaveCollectionToggle,
+        required this.collection,
+        this.onErrorChange,
+        this.onMultiCompress,
+        this.progressMultiCompress,
+        this.onMultiAutoTag,
+        this.progressMultiAutoTag,
+        this.statusMultiAutoTag,
+    });
 
     final List<ImageProvider?>? displayImages;
     final void Function(bool value)? onCorelatedChanged;
@@ -12,7 +27,10 @@ class GeneralCollectionManagerScreen extends StatefulWidget {
     final bool? saveCollectionToggle;
     final void Function(bool value)? onErrorChange;
     final void Function()? onMultiCompress;
-	final double? progressMultiCompress;
+    final double? progressMultiCompress;
+    final void Function()? onMultiAutoTag;
+    final double? progressMultiAutoTag;
+    final String? statusMultiAutoTag;
     final VirtualPresetCollection collection;
 
     @override
@@ -43,14 +61,30 @@ class _GeneralCollectionManagerScreenState extends State<GeneralCollectionManage
                 if(widget.corelated != null) SwitchListTile(
                     title: const Text("Relate all images together"),
                     subtitle: const Text("Make each added image related to the others in the batch. Useful if you want to add alternative versions of an image"),
-                    secondary: Icon(Icons.hub_outlined),
+                    secondary: const Icon(Icons.hub_outlined),
                     value: widget.corelated!,
                     onChanged: widget.onCorelatedChanged
                 ),
-				if(widget.onMultiCompress != null) ListTile(
+                if(widget.onMultiAutoTag != null) ListTile(
+                    title: const Text("Auto-tag all images (WaifuTagger)"),
+                    subtitle: widget.progressMultiAutoTag != null
+                        ? Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                                if (widget.statusMultiAutoTag != null) Text(widget.statusMultiAutoTag!),
+                                const SizedBox(height: 4),
+                                LinearProgressIndicator(value: widget.progressMultiAutoTag),
+                            ],
+                        )
+                        : const Text("Automatically generate tags for all images in this batch"),
+                    leading: const Icon(CupertinoIcons.sparkles),
+                    onTap: widget.onMultiAutoTag,
+                    enabled: widget.progressMultiAutoTag == null,
+                ),
+                if(widget.onMultiCompress != null) ListTile(
                     title: const Text("Compress all images"),
                     subtitle: widget.progressMultiCompress != null ? LinearProgressIndicator(value: widget.progressMultiCompress,) : const Text("Compress all images all at once"),
-                    leading: Icon(Icons.compress),
+                    leading: const Icon(Icons.compress),
                     onTap: widget.onMultiCompress,
                     enabled: widget.progressMultiCompress == null,
                 ),

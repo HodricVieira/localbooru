@@ -2,9 +2,13 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:file_picker/file_picker.dart';
+import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 import 'package:localbooru/api/index.dart';
+import 'package:localbooru/api/preset/index.dart';
+import 'package:localbooru/views/image_manager/shell.dart';
+import 'package:mime/mime.dart';
 import 'package:path/path.dart' as p;
 
 const setupScreenText = """
@@ -76,8 +80,50 @@ class SetBooruScreen extends StatelessWidget{
                                             onPressed: () async {
                                                 String? output = await FilePicker.platform.getDirectoryPath();
                                                 if(output == null) return;
+
+                                                // Check if folder already contains loose images before creating subfolders
+                                                final dir = Directory(output);
+                                                final List<File> existingImages = [];
+                                                await for (final entity in dir.list(recursive: false, followLinks: false)) {
+                                                    if (entity is File) {
+                                                        final mime = lookupMimeType(entity.path);
+                                                        if (mime != null && mime.startsWith("image/")) {
+                                                            existingImages.add(entity);
+                                                        }
+                                                    }
+                                                }
+                                                existingImages.sort((a, b) => a.path.compareTo(b.path));
+
                                                 await createDefaultBooruModel(output);
-                                                setBooru(output);
+                                                await setBooru(output);
+
+                                                if (!context.mounted) return;
+                                                if (existingImages.isNotEmpty) {
+                                                    final shouldImport = await showDialog<bool>(
+                                                        context: context,
+                                                        builder: (ctx) => AlertDialog(
+                                                            title: const Text("Images found in folder"),
+                                                            content: Text("Found ${existingImages.length} image(s) in this folder. Would you like to import and auto-tag them with WaifuTagger now?"),
+                                                            actions: [
+                                                                TextButton(
+                                                                    onPressed: () => Navigator.of(ctx).pop(false),
+                                                                    child: const Text("Skip"),
+                                                                ),
+                                                                FilledButton.icon(
+                                                                    onPressed: () => Navigator.of(ctx).pop(true),
+                                                                    icon: const Icon(CupertinoIcons.sparkles),
+                                                                    label: const Text("Import & Auto-Tag"),
+                                                                ),
+                                                            ],
+                                                        ),
+                                                    );
+                                                    if (shouldImport == true && context.mounted) {
+                                                        final presets = existingImages.map((f) => PresetImage(image: f, key: UniqueKey())).toList();
+                                                        context.go("/home");
+                                                        context.push("/manage_image", extra: PresetListManageImageSendable(presets, autoTagOnStart: true));
+                                                        return;
+                                                    }
+                                                }
                                                 if (context.mounted) context.go("/home");
                                             },
                                         )

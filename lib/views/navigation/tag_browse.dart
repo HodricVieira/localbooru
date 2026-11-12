@@ -214,8 +214,15 @@ class _GalleryViewerState extends State<GalleryViewer> {
                                                 key: ValueKey("$_currentIndex"),
                                                 images: snapshot.data!["images"],
                                                 onPressed: (image) {
-                                                    if(isInSelection()) toggleImageSelection(image.id);
-                                                    else context.push("/view/${image.id}");
+                                                    if(isInSelection()) {
+                                                        toggleImageSelection(image.id);
+                                                    } else {
+                                                        final List<BooruImage> currentImages = List<BooruImage>.from(snapshot.data!["images"]);
+                                                        context.push(
+                                                            "/view/${image.id}",
+                                                            extra: currentImages.map((e) => e.id).toList(),
+                                                        );
+                                                    }
                                                 },
                                                 autoadjustColumns: prefs.getInt("grid_size") ?? settingsDefaults["grid_size"],
                                                 dragOutside: !isMobile(),

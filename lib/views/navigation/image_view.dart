@@ -20,25 +20,194 @@ import 'package:path/path.dart' as p;
 import 'package:super_drag_and_drop/super_drag_and_drop.dart';
 import 'package:url_launcher/url_launcher_string.dart';
 
+class GallerySwipeView extends StatefulWidget {
+    const GallerySwipeView({
+        super.key,
+        required this.initialId,
+        this.galleryIds,
+    });
+
+    final ImageID initialId;
+    final List<ImageID>? galleryIds;
+
+    @override
+    State<GallerySwipeView> createState() => _GallerySwipeViewState();
+}
+
+class _GallerySwipeViewState extends State<GallerySwipeView> {
+    PageController? _pageController;
+    List<ImageID> _ids = [];
+    int _currentIndex = 0;
+    bool _isLoading = true;
+    Booru? _booru;
+    final Map<ImageID, BooruImage> _imageCache = {};
+    final Map<ImageID, List<BooruCollection>> _collectionsCache = {};
+
+    @override
+    void initState() {
+        super.initState();
+        _initGallery();
+    }
+
+    @override
+    void dispose() {
+        _pageController?.dispose();
+        super.dispose();
+    }
+
+    Future<void> _initGallery() async {
+        final booru = await getCurrentBooru();
+        List<ImageID> ids = widget.galleryIds != null && widget.galleryIds!.isNotEmpty
+            ? List<ImageID>.from(widget.galleryIds!)
+            : [];
+
+        if (ids.isEmpty) {
+            final raw = await booru.getRawInfo();
+            final List files = raw["files"] ?? [];
+            ids = files.map((f) => f["id"].toString()).toList().reversed.toList();
+        }
+
+        int initialIdx = ids.indexOf(widget.initialId);
+        if (initialIdx < 0) {
+            ids.insert(0, widget.initialId);
+            initialIdx = 0;
+        }
+
+        await _loadImageAndCollections(booru, ids[initialIdx]);
+
+        if (mounted) {
+            setState(() {
+                _booru = booru;
+                _ids = ids;
+                _currentIndex = initialIdx;
+                _pageController = PageController(initialPage: initialIdx);
+                _isLoading = false;
+            });
+        }
+    }
+
+    Future<Map<String, dynamic>> _loadImageAndCollections(Booru booru, ImageID id) async {
+        if (!_imageCache.containsKey(id)) {
+            final img = await booru.getImage(id);
+            if (img != null) _imageCache[id] = img;
+        }
+        if (!_collectionsCache.containsKey(id)) {
+            _collectionsCache[id] = await booru.obtainMatchingCollection(id);
+        }
+        return {
+            'image': _imageCache[id],
+            'collections': _collectionsCache[id] ?? <BooruCollection>[],
+        };
+    }
+
+    @override
+    Widget build(BuildContext context) {
+        if (_isLoading || _booru == null || _pageController == null) {
+            return const Scaffold(body: Center(child: CircularProgressIndicator()));
+        }
+
+        return ScrollConfiguration(
+            behavior: const MaterialScrollBehavior().copyWith(
+                dragDevices: {
+                    PointerDeviceKind.touch,
+                    PointerDeviceKind.mouse,
+                    PointerDeviceKind.trackpad,
+                    PointerDeviceKind.stylus,
+                },
+            ),
+            child: PageView.builder(
+                controller: _pageController,
+                itemCount: _ids.length,
+                onPageChanged: (index) {
+                    setState(() => _currentIndex = index);
+                },
+                itemBuilder: (context, index) {
+                    final id = _ids[index];
+                    return FutureBuilder<Map<String, dynamic>>(
+                        future: _loadImageAndCollections(_booru!, id),
+                        builder: (context, snapshot) {
+                            final BooruImage? image = snapshot.data?['image'] ?? _imageCache[id];
+                            final List<BooruCollection> collections =
+                                snapshot.data?['collections'] ?? _collectionsCache[id] ?? [];
+                            if (image == null) {
+                                return const Center(child: CircularProgressIndicator());
+                            }
+                            return ImageViewShell(
+                                key: ValueKey("view_$id"),
+                                image: image,
+                                shouldShowImageOnPortrait: true,
+                                collections: collections,
+                                galleryIds: _ids,
+                                currentGalleryIndex: index,
+                                onNavigateIndex: (targetIdx) {
+                                    if (targetIdx >= 0 && targetIdx < _ids.length) {
+                                        _pageController?.animateToPage(
+                                            targetIdx,
+                                            duration: const Duration(milliseconds: 250),
+                                            curve: Curves.easeOutCubic,
+                                        );
+                                    }
+                                },
+                                child: ImageViewProprieties(image, galleryIds: _ids),
+                            );
+                        },
+                    );
+                },
+            ),
+        );
+    }
+}
+
 class ImageViewShell extends StatelessWidget {
-    const ImageViewShell({super.key, required this.image, required this.child, this.shouldShowImageOnPortrait = false, this.collections});
+    const ImageViewShell({
+        super.key,
+        required this.image,
+        required this.child,
+        this.shouldShowImageOnPortrait = false,
+        this.collections,
+        this.galleryIds,
+        this.currentGalleryIndex,
+        this.onNavigateIndex,
+    });
 
     final BooruImage image;
     final Widget child;
     final bool shouldShowImageOnPortrait;
     final List<BooruCollection>? collections;
+    final List<ImageID>? galleryIds;
+    final int? currentGalleryIndex;
+    final void Function(int targetIndex)? onNavigateIndex;
 
     @override
     Widget build(BuildContext context) {
+        final String posText = (galleryIds != null && currentGalleryIndex != null && galleryIds!.length > 1)
+            ? " • ${currentGalleryIndex! + 1}/${galleryIds!.length}"
+            : "";
         final Widget appBarTitle = ListTile(
             contentPadding: EdgeInsets.zero,
             title: const Text("Image", style: TextStyle(fontSize: 20.0)),
-            subtitle: Text("ID ${image.id}", style: const TextStyle(fontSize: 14.0)),
+            subtitle: Text("ID ${image.id}$posText", style: const TextStyle(fontSize: 14.0)),
         );
         final Widget appBarLeading = BackButton(
             onPressed: context.pop,
         );
         final List<Widget> appBarActions = [
+            if (galleryIds != null && currentGalleryIndex != null && galleryIds!.length > 1) ...[
+                IconButton(
+                    icon: const Icon(Icons.chevron_left),
+                    tooltip: "Previous image",
+                    onPressed: currentGalleryIndex! > 0
+                        ? () => onNavigateIndex?.call(currentGalleryIndex! - 1)
+                        : null,
+                ),
+                IconButton(
+                    icon: const Icon(Icons.chevron_right),
+                    tooltip: "Next image",
+                    onPressed: currentGalleryIndex! + 1 < galleryIds!.length
+                        ? () => onNavigateIndex?.call(currentGalleryIndex! + 1)
+                        : null,
+                ),
+            ],
             IconButton(
                 icon: const Icon(Icons.edit),
                 tooltip: "Edit image",
@@ -79,7 +248,7 @@ class ImageViewShell extends StatelessWidget {
                             ),
                             SliverList(
                                 delegate: SliverChildListDelegate([
-                                    if(shouldShowImageOnPortrait) ImageViewDisplay(image),
+                                    if(shouldShowImageOnPortrait) ImageViewDisplay(image, galleryIds: galleryIds),
                                     child
                                 ])
                             )
@@ -100,7 +269,7 @@ class ImageViewShell extends StatelessWidget {
                             child: Row(
                                 children: [
                                     Expanded(
-                                        child: ImageViewDisplay(image)
+                                        child: ImageViewDisplay(image, galleryIds: galleryIds)
                                     ),
                                     ConstrainedBox(
                                         constraints: const BoxConstraints(maxWidth: 400.0),
@@ -127,9 +296,10 @@ class ImageViewShell extends StatelessWidget {
 }
 
 class ImageViewDisplay extends StatefulWidget {
-    const ImageViewDisplay(this.image, {super.key});
+    const ImageViewDisplay(this.image, {super.key, this.galleryIds});
 
     final BooruImage image;
+    final List<ImageID>? galleryIds;
 
     @override
     State<ImageViewDisplay> createState() => _ImageViewDisplayState();
@@ -162,13 +332,16 @@ class _ImageViewDisplayState extends State<ImageViewDisplay> {
                             cursor: SystemMouseCursors.zoomIn,
                             child: GestureDetector(
                                 onTap: () => {
-                                    GoRouter.of(context).push("/zoom_image/${widget.image.id}")
+                                    GoRouter.of(context).push(
+                                        "/zoom_image/${widget.image.id}",
+                                        extra: widget.galleryIds,
+                                    )
                                 },
                                 onLongPress: () => openContextMenu(getOffsetRelativeToBox(offset: longPress.globalPosition, renderObject: context.findRenderObject()!)),
                                 onLongPressDown: (tap) => setState(() => longPress = tap),
                                 onSecondaryTapDown: (tap) => openContextMenu(getOffsetRelativeToBox(offset: tap.globalPosition, renderObject: context.findRenderObject()!)),
                                 child: Hero(
-                                    tag: "detailed",
+                                    tag: "detailed_${widget.image.id}",
                                     child: DragItemWidget(
                                         dragItemProvider: (request) {
                                             final item = DragItem(
@@ -193,9 +366,10 @@ class _ImageViewDisplayState extends State<ImageViewDisplay> {
 }
 
 class ImageViewProprieties extends StatefulWidget {
-    const ImageViewProprieties(this.image, {super.key});
+    const ImageViewProprieties(this.image, {super.key, this.galleryIds});
     
     final BooruImage image;
+    final List<ImageID>? galleryIds;
     
     @override
     State<StatefulWidget> createState() => _ImageViewProprietiesState();
@@ -371,7 +545,7 @@ class _ImageViewProprietiesState extends State<ImageViewProprieties> {
                                                             child: MouseRegion(
                                                                 cursor: WidgetStateMouseCursor.clickable,
                                                                 child: GestureDetector(
-                                                                    onTap: () => context.push("/view/$imageId"),
+                                                                    onTap: () => context.push("/view/$imageId", extra: widget.image.relatedImages),
                                                                     child: BooruImageLoader(
                                                                         booru: booru,
                                                                         id: imageId,
@@ -483,7 +657,7 @@ class _CollectionSwitcherState extends State<CollectionSwitcher> {
                     IconButton(
                         icon: const Icon(Icons.arrow_back),
                         onPressed: collectionPosition > 0 ? () {
-                            context.push("/view/${widget.collection.pages[collectionPosition - 1]}");
+                            context.push("/view/${widget.collection.pages[collectionPosition - 1]}", extra: widget.collection.pages);
                         } : null
                     ),
                     Expanded(
@@ -522,7 +696,7 @@ class _CollectionSwitcherState extends State<CollectionSwitcher> {
                     IconButton(
                         icon: const Icon(Icons.arrow_forward),
                         onPressed: (collectionPosition + 1) < widget.collection.pages.length ? () {
-                            context.push("/view/${widget.collection.pages[collectionPosition + 1]}");
+                            context.push("/view/${widget.collection.pages[collectionPosition + 1]}", extra: widget.collection.pages);
                         } : null
                     ),
                 ],

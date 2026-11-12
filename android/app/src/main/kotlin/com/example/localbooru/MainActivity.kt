@@ -1,6 +1,200 @@
 package com.auser.localbooru
 
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
+import android.graphics.Canvas
+import android.graphics.Color
+import android.graphics.Paint
+import android.graphics.RectF
+import ai.onnxruntime.OnnxTensor
+import ai.onnxruntime.OrtEnvironment
+import ai.onnxruntime.OrtSession
+import ai.onnxruntime.TensorInfo
 import io.flutter.embedding.android.FlutterFragmentActivity
+import io.flutter.embedding.engine.FlutterEngine
+import io.flutter.plugin.common.MethodChannel
+import java.io.File
+import java.nio.ByteBuffer
+import java.nio.ByteOrder
+import java.nio.FloatBuffer
+import java.util.Collections
+import java.util.concurrent.Executors
 
 class MainActivity: FlutterFragmentActivity() {
+    private val CHANNEL = "com.auser.localbooru/waifutagger"
+    private val executor = Executors.newSingleThreadExecutor()
+
+    private var ortEnv: OrtEnvironment? = null
+    private var ortSession: OrtSession? = null
+    private var loadedModelPath: String? = null
+
+    override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
+        super.configureFlutterEngine(flutterEngine)
+        MethodChannel(flutterEngine.dartExecutor.binaryMessenger, CHANNEL).setMethodCallHandler { call, result ->
+            when (call.method) {
+                "runInference" -> {
+                    val modelPath = call.argument<String>("modelPath")
+                    val imagePath = call.argument<String>("imagePath")
+                    if (modelPath == null || imagePath == null) {
+                        result.error("INVALID_ARGS", "modelPath and imagePath are required", null)
+                        return@setMethodCallHandler
+                    }
+                    executor.execute {
+                        try {
+                            val probabilities = runOnnxInference(modelPath, imagePath)
+                            runOnUiThread {
+                                result.success(probabilities)
+                            }
+                        } catch (e: Exception) {
+                            runOnUiThread {
+                                result.error("INFERENCE_ERROR", e.message ?: "Unknown ONNX error", e.stackTraceToString())
+                            }
+                        }
+                    }
+                }
+                "releaseModel" -> {
+                    executor.execute {
+                        try {
+                            ortSession?.close()
+                            ortSession = null
+                            loadedModelPath = null
+                            runOnUiThread { result.success(true) }
+                        } catch (e: Exception) {
+                            runOnUiThread { result.error("RELEASE_ERROR", e.message, null) }
+                        }
+                    }
+                }
+                else -> result.notImplemented()
+            }
+        }
+    }
+
+    private fun getOrCreateSession(modelPath: String): OrtSession {
+        if (ortEnv == null) {
+            ortEnv = OrtEnvironment.getEnvironment()
+        }
+        if (ortSession != null && loadedModelPath == modelPath) {
+            return ortSession!!
+        }
+        ortSession?.close()
+        val options = OrtSession.SessionOptions()
+        options.setIntraOpNumThreads(4)
+        ortSession = ortEnv!!.createSession(modelPath, options)
+        loadedModelPath = modelPath
+        return ortSession!!
+    }
+
+    private fun prepareBitmap448(imagePath: String, targetSize: Int = 448): Bitmap {
+        val original = BitmapFactory.decodeFile(imagePath)
+            ?: throw IllegalArgumentException("Could not decode image at $imagePath")
+        val bmp = Bitmap.createBitmap(targetSize, targetSize, Bitmap.Config.ARGB_8888)
+        val canvas = Canvas(bmp)
+        canvas.drawColor(Color.WHITE)
+
+        val width = original.width.toFloat()
+        val height = original.height.toFloat()
+        val scale = targetSize.toFloat() / maxOf(width, height)
+        val scaledWidth = width * scale
+        val scaledHeight = height * scale
+        val left = (targetSize - scaledWidth) / 2f
+        val top = (targetSize - scaledHeight) / 2f
+
+        val paint = Paint(Paint.FILTER_BITMAP_FLAG)
+        canvas.drawBitmap(original, null, RectF(left, top, left + scaledWidth, top + scaledHeight), paint)
+        if (original != bmp) {
+            original.recycle()
+        }
+        return bmp
+    }
+
+    private fun runOnnxInference(modelPath: String, imagePath: String): List<Double> {
+        val session = getOrCreateSession(modelPath)
+        val env = ortEnv!!
+
+        val inputName = session.inputNames.first()
+        val inputNodeInfo = session.inputInfo[inputName]?.info as? TensorInfo
+        val isUint8 = inputNodeInfo?.type?.name?.contains("UINT8") == true
+        val shape = inputNodeInfo?.shape ?: longArrayOf(1, 448, 448, 3)
+
+        val targetSize = 448
+        val bmp = prepareBitmap448(imagePath, targetSize)
+        val pixels = IntArray(targetSize * targetSize)
+        bmp.getPixels(pixels, 0, targetSize, 0, 0, targetSize, targetSize)
+        bmp.recycle()
+
+        val isChannelsFirst = shape.size == 4 && shape[1] == 3L
+
+        val inputTensor: OnnxTensor = if (isUint8) {
+            // WaifuTagger -mobile ONNX format: UINT8 RGB [1, 448, 448, 3] (or [1, 3, 448, 448])
+            val byteBuffer = ByteBuffer.allocateDirect(1 * targetSize * targetSize * 3).order(ByteOrder.nativeOrder())
+            if (isChannelsFirst) {
+                for (c in 0..2) {
+                    for (pixel in pixels) {
+                        val v = when (c) {
+                            0 -> (pixel shr 16) and 0xFF
+                            1 -> (pixel shr 8) and 0xFF
+                            else -> pixel and 0xFF
+                        }
+                        byteBuffer.put(v.toByte())
+                    }
+                }
+                byteBuffer.rewind()
+                OnnxTensor.createTensor(env, byteBuffer, longArrayOf(1, 3, targetSize.toLong(), targetSize.toLong()), ai.onnxruntime.OnnxJavaType.UINT8)
+            } else {
+                for (pixel in pixels) {
+                    val r = (pixel shr 16) and 0xFF
+                    val g = (pixel shr 8) and 0xFF
+                    val b = pixel and 0xFF
+                    byteBuffer.put(r.toByte())
+                    byteBuffer.put(g.toByte())
+                    byteBuffer.put(b.toByte())
+                }
+                byteBuffer.rewind()
+                OnnxTensor.createTensor(env, byteBuffer, longArrayOf(1, targetSize.toLong(), targetSize.toLong(), 3), ai.onnxruntime.OnnxJavaType.UINT8)
+            }
+        } else {
+            // Standard SmilingWolf WD14 ONNX format: FLOAT32 BGR [1, 448, 448, 3] (or [1, 3, 448, 448])
+            val floatBuffer = ByteBuffer.allocateDirect(1 * targetSize * targetSize * 3 * 4)
+                .order(ByteOrder.nativeOrder())
+                .asFloatBuffer()
+            if (isChannelsFirst) {
+                for (c in 0..2) {
+                    for (pixel in pixels) {
+                        val v = when (c) {
+                            0 -> (pixel and 0xFF).toFloat() // B
+                            1 -> ((pixel shr 8) and 0xFF).toFloat() // G
+                            else -> ((pixel shr 16) and 0xFF).toFloat() // R
+                        }
+                        floatBuffer.put(v)
+                    }
+                }
+                floatBuffer.rewind()
+                OnnxTensor.createTensor(env, floatBuffer, longArrayOf(1, 3, targetSize.toLong(), targetSize.toLong()))
+            } else {
+                for (pixel in pixels) {
+                    val r = ((pixel shr 16) and 0xFF).toFloat()
+                    val g = ((pixel shr 8) and 0xFF).toFloat()
+                    val b = (pixel and 0xFF).toFloat()
+                    floatBuffer.put(b)
+                    floatBuffer.put(g)
+                    floatBuffer.put(r)
+                }
+                floatBuffer.rewind()
+                OnnxTensor.createTensor(env, floatBuffer, longArrayOf(1, targetSize.toLong(), targetSize.toLong(), 3))
+            }
+        }
+
+        inputTensor.use { tensor ->
+            session.run(Collections.singletonMap(inputName, tensor)).use { results ->
+                val outputValue = results[0].value
+                val probs: FloatArray = when (outputValue) {
+                    is Array<*> -> (outputValue[0] as FloatArray)
+                    is FloatArray -> outputValue
+                    else -> throw IllegalStateException("Unexpected ONNX output type: ${outputValue?.javaClass}")
+                }
+                return probs.map { it.toDouble() }
+            }
+        }
+    }
 }
+

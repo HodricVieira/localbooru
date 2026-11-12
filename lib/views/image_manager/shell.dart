@@ -1,22 +1,28 @@
 import 'dart:io';
 
 import 'package:collection/collection.dart';
+import 'package:file_picker/file_picker.dart';
+import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 import 'package:localbooru/api/index.dart';
 import 'package:localbooru/api/preset/index.dart';
+import 'package:localbooru/api/tags/index.dart';
 import 'package:localbooru/components/app_bar_linear_progress.dart';
 import 'package:localbooru/components/dialogs/download_dialog.dart';
 import 'package:localbooru/components/dialogs/image_selector_dialog.dart';
 import 'package:localbooru/components/dialogs/textfield_dialogs.dart';
 import 'package:localbooru/shortcut_handler.dart';
 import 'package:localbooru/utils/compressor.dart';
+import 'package:localbooru/utils/constants.dart';
 import 'package:localbooru/utils/listeners.dart';
 import 'package:localbooru/utils/platform_tools.dart';
 import 'package:localbooru/views/image_manager/components/image_upload.dart';
 import 'package:localbooru/views/image_manager/form.dart';
 import 'package:localbooru/views/image_manager/general_collection_manager.dart';
+import 'package:mime/mime.dart';
 import 'package:path/path.dart' as p;
+import 'package:shared_preferences/shared_preferences.dart';
 
 class ImageManagerShell extends StatefulWidget {
     const ImageManagerShell({super.key, this.sendable});
@@ -36,6 +42,8 @@ class _ImageManagerShellState extends State<ImageManagerShell> {
     bool saveCollection = false;
     int savedImages = 0;
     double? progressCompressedImages;
+    double? progressAutoTagImages;
+    String? statusAutoTagImages;
     int imagePage = 0;
 
     bool isCorelated = false;
@@ -48,7 +56,13 @@ class _ImageManagerShellState extends State<ImageManagerShell> {
         super.initState();
         if(widget.sendable == null) preset = VirtualPresetCollection(pages: [PresetImage()]);
         if(widget.sendable is PresetManageImageSendable) preset = VirtualPresetCollection(pages: [(widget.sendable as PresetManageImageSendable).preset]);
-        if(widget.sendable is PresetListManageImageSendable) preset = VirtualPresetCollection(pages: (widget.sendable as PresetListManageImageSendable).presets);
+        if(widget.sendable is PresetListManageImageSendable) {
+            final listSendable = widget.sendable as PresetListManageImageSendable;
+            preset = VirtualPresetCollection(pages: listSendable.presets);
+            if (listSendable.autoTagOnStart) {
+                imagePage = -1;
+            }
+        }
         if(widget.sendable is VirtualPresetManageImageSendable) {
             saveCollection = true;
             preset = (widget.sendable as VirtualPresetManageImageSendable).preset;
@@ -56,6 +70,12 @@ class _ImageManagerShellState extends State<ImageManagerShell> {
 
         if(preset.pages == null || preset.pages!.isEmpty) preset.pages = [PresetImage()];
         errorOnPages.addAll(List.generate(preset.pages!.length, (index) => preset.pages![index].image == null || preset.pages![index].tags == null));
+
+        if (widget.sendable is PresetListManageImageSendable && (widget.sendable as PresetListManageImageSendable).autoTagOnStart) {
+            WidgetsBinding.instance.addPostFrameCallback((_) {
+                autoTagAllImages();
+            });
+        }
     }
 
     void saveImages() async {
@@ -109,6 +129,65 @@ class _ImageManagerShellState extends State<ImageManagerShell> {
         }
         updatePreset.update();
         setState(() {progressCompressedImages = null;});
+    }
+
+    Future<void> autoTagAllImages() async {
+        final prefs = await SharedPreferences.getInstance();
+        final double threshold = prefs.getDouble("autotag_accuracy") ?? settingsDefaults["autotag_accuracy"];
+        final total = preset.pages!.where((image) => image.image != null).length;
+        if (total == 0) return;
+
+        setState(() {
+            progressAutoTagImages = 0.0;
+            statusAutoTagImages = "0 / $total";
+        });
+
+        int processed = 0;
+        for (final (index, presetImage) in preset.pages!.indexed) {
+            if (presetImage.image == null) continue;
+            if (!mounted) return;
+            setState(() {
+                statusAutoTagImages = "Tagging ${processed + 1} / $total (${p.basename(presetImage.image!.path)})...";
+            });
+            try {
+                final detailed = await autoTagDetailed(presetImage.image!, threshold: threshold);
+                final existingTags = presetImage.tags ?? {};
+                Map<String, List<String>> mergedTags = {};
+                for (final type in ["generic", "artist", "character", "copyright", "species"]) {
+                    final set = <String>{
+                        ...(existingTags[type] ?? []).where((e) => e.isNotEmpty),
+                        ...(detailed.separatedTags[type] ?? []).where((e) => e.isNotEmpty),
+                    };
+                    mergedTags[type] = set.toList();
+                }
+                if (mergedTags.values.every((list) => list.isEmpty)) {
+                    mergedTags["generic"] = ["tagme"];
+                }
+                preset.pages![index].tags = mergedTags;
+                preset.pages![index].rating ??= detailed.rating;
+                if (index + 1 < errorOnPages.length) {
+                    errorOnPages[index + 1] = false;
+                }
+            } catch (e) {
+                debugPrint("AutoTag failed on ${presetImage.image!.path}: $e");
+            }
+            processed++;
+            if (mounted) {
+                setState(() {
+                    progressAutoTagImages = processed / total;
+                });
+            }
+        }
+        updatePreset.update();
+        if (mounted) {
+            setState(() {
+                progressAutoTagImages = null;
+                statusAutoTagImages = null;
+            });
+            ScaffoldMessenger.of(context).showSnackBar(
+                SnackBar(content: Text("Auto-tagging concluído para $processed imagens!")),
+            );
+        }
     }
 
     @override
@@ -229,11 +308,42 @@ class _ImageManagerShellState extends State<ImageManagerShell> {
                                             onTap: () async {
                                                 final files = await selectFileModal(context: context);
                                                 if (files != null) {
-                                                    // if(preset.pages!.first.image == null && result.files.length > 1) preset.pages = [];
+                                                    if(preset.pages!.first.image == null && preset.pages!.length == 1) {
+                                                        preset.pages!.first.image = files.removeAt(0);
+                                                        updatePreset.update();
+                                                    }
                                                     addMultipleImages(files);
                                                     setState(() => imagePage = preset.pages!.length - 1);
                                                     _scaffoldKey.currentState!.closeEndDrawer();
                                                 }
+                                            }
+                                        ),
+                                        ListTile(
+                                            title: const Text("Import folder & auto-tag"),
+                                            leading: const Icon(Icons.create_new_folder_outlined),
+                                            onTap: () async {
+                                                _scaffoldKey.currentState!.closeEndDrawer();
+                                                final folderSendable = await pickFolderAndPrepareSendable(context);
+                                                if (folderSendable != null && mounted) {
+                                                    if (preset.pages!.length == 1 && preset.pages!.first.image == null) {
+                                                        preset.pages = folderSendable.presets;
+                                                        errorOnPages = [false, ...List.generate(folderSendable.presets.length, (_) => true)];
+                                                    } else {
+                                                        preset.pages!.addAll(folderSendable.presets);
+                                                        errorOnPages.addAll(List.generate(folderSendable.presets.length, (_) => true));
+                                                    }
+                                                    setState(() => imagePage = -1);
+                                                    await autoTagAllImages();
+                                                }
+                                            }
+                                        ),
+                                        ListTile(
+                                            title: const Text("Auto-tag all images"),
+                                            leading: const Icon(CupertinoIcons.sparkles),
+                                            onTap: () async {
+                                                _scaffoldKey.currentState!.closeEndDrawer();
+                                                setState(() => imagePage = -1);
+                                                await autoTagAllImages();
                                             }
                                         ),
                                         ListTile(
@@ -311,7 +421,9 @@ class _ImageManagerShellState extends State<ImageManagerShell> {
                                     onErrorChange: (value) => setState(() => errorOnPages[0] = value),
                                     onMultiCompress: compressAllImages,
                                     progressMultiCompress: progressCompressedImages,
-                                    // progressMultiCompress: 0.5,
+                                    onMultiAutoTag: autoTagAllImages,
+                                    progressMultiAutoTag: progressAutoTagImages,
+                                    statusMultiAutoTag: statusAutoTagImages,
                                 ),
                                 for (final (index, imagePreset) in preset.pages!.indexed) ImageManagerForm(
                                     preset: imagePreset,
@@ -337,8 +449,9 @@ class PresetManageImageSendable extends ManageImageSendable {
     PresetImage preset;
 }
 class PresetListManageImageSendable extends ManageImageSendable {
-    PresetListManageImageSendable(this.presets);
+    PresetListManageImageSendable(this.presets, {this.autoTagOnStart = false});
     List<PresetImage> presets;
+    bool autoTagOnStart;
 }
 class VirtualPresetManageImageSendable extends ManageImageSendable {
     VirtualPresetManageImageSendable(this.preset);
@@ -348,4 +461,36 @@ class VirtualPresetManageImageSendable extends ManageImageSendable {
 ManageImageSendable handleSendable(VirtualPreset preset) {
     if(preset is VirtualPresetCollection) return VirtualPresetManageImageSendable(preset);
     else return PresetManageImageSendable(preset as PresetImage);
+}
+
+Future<PresetListManageImageSendable?> pickFolderAndPrepareSendable(BuildContext context, {bool autoTagOnStart = true}) async {
+    final String? folderPath = await FilePicker.platform.getDirectoryPath();
+    if (folderPath == null) return null;
+
+    final dir = Directory(folderPath);
+    if (!await dir.exists()) return null;
+
+    final List<File> imageFiles = [];
+    await for (final entity in dir.list(recursive: false, followLinks: false)) {
+        if (entity is File) {
+            final mime = lookupMimeType(entity.path);
+            if (mime != null && mime.startsWith("image/")) {
+                imageFiles.add(entity);
+            }
+        }
+    }
+
+    imageFiles.sort((a, b) => a.path.compareTo(b.path));
+
+    if (imageFiles.isEmpty) {
+        if (context.mounted) {
+            ScaffoldMessenger.of(context).showSnackBar(
+                const SnackBar(content: Text("Nenhuma imagem encontrada na pasta selecionada.")),
+            );
+        }
+        return null;
+    }
+
+    final presets = imageFiles.map((f) => PresetImage(image: f, key: UniqueKey())).toList();
+    return PresetListManageImageSendable(presets, autoTagOnStart: autoTagOnStart);
 }

@@ -78,6 +78,19 @@ class DefaultDrawer extends StatelessWidget {
                     } : null,
                 ),
                 ListTile(
+                    title: const Text("Import folder & auto-tag"),
+                    leading: const Icon(Icons.create_new_folder_outlined),
+                    enabled: activeView != "manage_image",
+                    onTap: () async {
+                        final router = GoRouter.of(context);
+                        final sendable = await pickFolderAndPrepareSendable(context, autoTagOnStart: true);
+                        if (sendable != null) {
+                            if (context.mounted) Scaffold.of(context).closeDrawer();
+                            router.push("/manage_image", extra: sendable);
+                        }
+                    },
+                ),
+                ListTile(
                     title: const Text("Import from service"),
                     leading: const Icon(Icons.link),
                     enabled: activeView != "manage_image",

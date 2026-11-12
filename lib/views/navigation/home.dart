@@ -10,6 +10,7 @@ import 'package:localbooru/components/search_tag.dart';
 import 'package:localbooru/utils/constants.dart';
 import 'package:localbooru/utils/listeners.dart';
 import 'package:localbooru/utils/shared_prefs_widget.dart';
+import 'package:localbooru/views/image_manager/shell.dart';
 
 class HomePage extends StatefulWidget {
     const HomePage({super.key});
@@ -92,11 +93,26 @@ class _HomePageState extends State<HomePage> {
                                         Wrap(
                                             direction: Axis.horizontal,
                                             spacing: 8,
+                                            runSpacing: 8,
+                                            alignment: WrapAlignment.center,
                                             children: [
                                                 OutlinedButton.icon(
                                                     onPressed: () => context.push("/collections"),
                                                     label: const Text("Collections"),
                                                     icon: const Icon(Icons.photo_library),
+                                                    style: orientation == Orientation.portrait ? OutlinedButton.styleFrom(
+                                                        minimumSize: const Size(0, 48)
+                                                    ) : null,
+                                                ),
+                                                OutlinedButton.icon(
+                                                    onPressed: () async {
+                                                        final sendable = await pickFolderAndPrepareSendable(context, autoTagOnStart: true);
+                                                        if (sendable != null && context.mounted) {
+                                                            context.push("/manage_image", extra: sendable);
+                                                        }
+                                                    },
+                                                    label: const Text("Tag Folder"),
+                                                    icon: const Icon(Icons.create_new_folder_outlined),
                                                     style: orientation == Orientation.portrait ? OutlinedButton.styleFrom(
                                                         minimumSize: const Size(0, 48)
                                                     ) : null,

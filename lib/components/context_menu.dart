@@ -1,5 +1,6 @@
 import 'dart:io';
 
+import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 import 'package:localbooru/api/index.dart';
@@ -73,6 +74,19 @@ List<PopupMenuEntry> imageManagementItems(BooruImage image, {required BuildConte
 
 List<PopupMenuEntry> multipleImageManagementItems(List<BooruImage> images, {required BuildContext context}) {
     return [
+        PopupMenuItem(
+            child: const ListTile(
+                contentPadding: EdgeInsets.zero,
+                leading: Icon(CupertinoIcons.sparkles),
+                title: Text("Auto-tag selected (WaifuTagger)"),
+            ),
+            onTap: () async {
+                final presets = await Future.wait(images.map((img) => PresetImage.fromExistingImage(img)));
+                if (context.mounted) {
+                    context.push("/manage_image", extra: PresetListManageImageSendable(presets, autoTagOnStart: true));
+                }
+            },
+        ),
         PopupMenuItem(
             child: Text("Delete images", style: TextStyle(color: Theme.of(context).colorScheme.error)),
             onTap: () async {

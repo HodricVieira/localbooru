@@ -116,23 +116,37 @@ class _ImageManagerFormState extends State<ImageManagerForm> {
     void fetchTags() async {
         final prefs = await SharedPreferences.getInstance();
         setState(() => isGeneratingTags = true);
-        autoTag(File(loadedImage)).then((tags) async {
-            final moreAccurateTags = filterAccurateResults(tags, prefs.getDouble("autotag_accuracy") ?? settingsDefaults["autotag_accuracy"]);
+        final double threshold = prefs.getDouble("autotag_accuracy") ?? settingsDefaults["autotag_accuracy"];
+        autoTagDetailed(File(loadedImage), threshold: threshold).then((detailed) async {
+            final separatedTags = detailed.separatedTags;
 
-            final separatedTags = await (await getCurrentBooru()).separateTagsByType(moreAccurateTags.keys.toList());
+            String mergeUnique(String existing, List<String>? added) {
+                final set = <String>{
+                    ...existing.split(" ").where((e) => e.isNotEmpty),
+                    ...(added ?? []).where((e) => e.isNotEmpty),
+                };
+                return set.join(" ");
+            }
 
-            if(separatedTags["generic"] != null) tagController.text = [tagController.text, ...separatedTags["generic"]!].where((e) => e.isNotEmpty).join(" ");
-            if(separatedTags["artist"] != null) artistTagController.text = [artistTagController.text, ...separatedTags["artist"]!].where((e) => e.isNotEmpty).join(" ");
-            if(separatedTags["character"] != null) characterTagController.text = [characterTagController.text, ...separatedTags["character"]!].where((e) => e.isNotEmpty).join(" ");
-            if(separatedTags["copyright"] != null) copyrightTagController.text = [copyrightTagController.text, ...separatedTags["copyright"]!].where((e) => e.isNotEmpty).join(" ");
-            if(separatedTags["species"] != null) speciesTagController.text = [speciesTagController.text, ...separatedTags["species"]!].where((e) => e.isNotEmpty).join(" ");
+            setState(() {
+                tagController.text = mergeUnique(tagController.text, separatedTags["generic"]);
+                artistTagController.text = mergeUnique(artistTagController.text, separatedTags["artist"]);
+                characterTagController.text = mergeUnique(characterTagController.text, separatedTags["character"]);
+                copyrightTagController.text = mergeUnique(copyrightTagController.text, separatedTags["copyright"]);
+                speciesTagController.text = mergeUnique(speciesTagController.text, separatedTags["species"]);
+                if (rating == null && detailed.rating != null) {
+                    rating = detailed.rating;
+                }
+            });
+            sendPreset();
         }).catchError((error, stackTrace) {
-            ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-                content: Text('Could not obtain tag information, ${error.toString()}'),
-            ));
-            throw error;
+            if (mounted) {
+                ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+                    content: Text('Could not obtain tag information: ${error.toString()}'),
+                ));
+            }
         }).whenComplete(() {
-            setState(() => isGeneratingTags = false);
+            if (mounted) setState(() => isGeneratingTags = false);
         });
     }
 

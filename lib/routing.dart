@@ -124,32 +124,12 @@ final router = GoRouter(
                                             builder: (context, state) {
                                                 final String? id = state.pathParameters["id"];
                                                 if (id == null) return Text("Invalid ID $id");
-
-                                                future() async {
-                                                    final booru = await getCurrentBooru();
-                                                    final image = await booru.getImage(id);
-                                                    final collectionList = await booru.obtainMatchingCollection(id);
-                                                    return {
-                                                        'image': image,
-                                                        'collections': collectionList
-                                                    };
-                                                }
-
-                                                return FutureBuilder(
-                                                    future: future(),
-                                                    builder: (context, snapshot) {
-                                                        if(snapshot.hasData) {
-                                                            BooruImage image = snapshot.data!['image'] as BooruImage;
-                                                            List<BooruCollection> collections = snapshot.data!['collections'] as List<BooruCollection>;
-                                                            return ImageViewShell(
-                                                                image: image,
-                                                                shouldShowImageOnPortrait: true,
-                                                                collections: collections,
-                                                                child: ImageViewProprieties(image),
-                                                            );
-                                                        }
-                                                        return const Center(child: CircularProgressIndicator(),);
-                                                    },
+                                                final List<ImageID>? galleryIds = state.extra is List
+                                                    ? List<ImageID>.from(state.extra as List)
+                                                    : null;
+                                                return GallerySwipeView(
+                                                    initialId: id,
+                                                    galleryIds: galleryIds,
                                                 );
                                             },
                                             routes: [
@@ -322,13 +302,16 @@ final router = GoRouter(
                     pageBuilder: (context, state) {
                         final String? id = state.pathParameters["id"];
                         if (id == null) return MaterialPage(child: Text("Invalid ID $id"));
+                        final List<ImageID>? galleryIds = state.extra is List
+                            ? List<ImageID>.from(state.extra as List)
+                            : null;
                         return CustomTransitionPage(
                             transitionDuration: const Duration(milliseconds: 200),
                             key: state.pageKey,
                             child: BooruLoader(builder: (_, booru) => BooruImageLoader(
                                 booru: booru,
                                 id: id,
-                                builder: (context, image) => ImageViewZoom(image),
+                                builder: (context, image) => ImageViewZoom(image, galleryIds: galleryIds),
                             )),
                             transitionsBuilder: (context, animation, secondaryAnimation, child) {
                                 return FadeTransition(

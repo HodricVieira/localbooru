@@ -172,8 +172,15 @@ String _normalizeTag(String rawTag) {
     return rawTag.trim().replaceAll(" ", "_");
 }
 
+String? _cachedVocabPath;
+List<_TagVocabEntry>? _cachedVocabEntries;
+
 Future<List<_TagVocabEntry>> _loadModelVocabulary(File tagsFile) async {
+    if (_cachedVocabPath == tagsFile.path && _cachedVocabEntries != null) {
+        return _cachedVocabEntries!;
+    }
     final content = await tagsFile.readAsString();
+    List<_TagVocabEntry> ResultEntries;
     if (tagsFile.path.endsWith(".json")) {
         final Map<String, dynamic> decoded = jsonDecode(content);
         final List<_TagVocabEntry> entries = List.generate(
@@ -189,7 +196,7 @@ Future<List<_TagVocabEntry>> _loadModelVocabulary(File tagsFile) async {
                 );
             }
         });
-        return entries;
+        ResultEntries = entries;
     } else {
         // selected_tags.csv format: tag_id,name,category,count
         final lines = const LineSplitter().convert(content);
@@ -205,8 +212,11 @@ Future<List<_TagVocabEntry>> _loadModelVocabulary(File tagsFile) async {
                 ));
             }
         }
-        return entries;
+        ResultEntries = entries;
     }
+    _cachedVocabPath = tagsFile.path;
+    _cachedVocabEntries = ResultEntries;
+    return ResultEntries;
 }
 
 Rating? _mapWdRating(Map<String, double> ratingScores) {

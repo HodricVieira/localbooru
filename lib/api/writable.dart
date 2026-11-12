@@ -54,7 +54,7 @@ Map<String, dynamic> rebase(Map<String, dynamic> raw) {
 
 
 
-Future<BooruImage> insertImage(PresetImage preset) async {
+Future<BooruImage> insertImage(PresetImage preset, {bool notify = true}) async {
     final Booru booru = await getCurrentBooru();
 
     if(preset.image is! File) throw "Preset does not contain a file";
@@ -74,7 +74,7 @@ Future<BooruImage> insertImage(PresetImage preset) async {
     for (MapEntry<String, List<String>> tagType in preset.tags!.entries) {
         if(tagType.value.isNotEmpty) {
             tagSet.addAll(tagType.value); //you can add values to sets
-            if(tagType.key != "generic") await addSpecificTags(tagType.value, type: tagType.key);
+            if(tagType.key != "generic") await addSpecificTags(tagType.value, type: tagType.key, notify: false);
         }
     }
 
@@ -113,22 +113,22 @@ Future<BooruImage> insertImage(PresetImage preset) async {
 
     raw["files"] = files;
 
-    await writeSettings(booru.path, raw);
+    await writeSettings(booru.path, raw, notify: notify);
 
     return (await booru.getImage(id))!;
 }
 
-Future<void> writeSpecificTags(Map<String, List<String>> specificTags) async {
+Future<void> writeSpecificTags(Map<String, List<String>> specificTags, {bool notify = true}) async {
     final Booru booru = await getCurrentBooru();
 
     // add to json
     var raw = await booru.getRawInfo();
     raw["specificTags"] = specificTags;
 
-    await writeSettings(booru.path, raw);
+    await writeSettings(booru.path, raw, notify: notify);
 }
 
-Future<void> addSpecificTags(List<String> tags, {required String type}) async {
+Future<void> addSpecificTags(List<String> tags, {required String type, bool notify = true}) async {
     final Booru booru = await getCurrentBooru();
 
     // add to json
@@ -149,7 +149,7 @@ Future<void> addSpecificTags(List<String> tags, {required String type}) async {
 
     // debugPrint("before ${raw["specificTags"]} after $iLoveDartsTypeSystem");
 
-    await writeSpecificTags(iLoveDartsTypeSystem);
+    await writeSpecificTags(iLoveDartsTypeSystem, notify: notify);
 }
 
 Future removeImage(String id, {bool notify = true}) async {

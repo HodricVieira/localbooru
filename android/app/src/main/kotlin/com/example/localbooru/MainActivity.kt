@@ -45,9 +45,9 @@ class MainActivity: FlutterFragmentActivity() {
                             runOnUiThread {
                                 result.success(probabilities)
                             }
-                        } catch (e: Exception) {
+                        } catch (t: Throwable) {
                             runOnUiThread {
-                                result.error("INFERENCE_ERROR", e.message ?: "Unknown ONNX error", e.stackTraceToString())
+                                result.error("INFERENCE_ERROR", t.message ?: "Unknown ONNX error", t.stackTraceToString())
                             }
                         }
                     }
@@ -59,8 +59,8 @@ class MainActivity: FlutterFragmentActivity() {
                             ortSession = null
                             loadedModelPath = null
                             runOnUiThread { result.success(true) }
-                        } catch (e: Exception) {
-                            runOnUiThread { result.error("RELEASE_ERROR", e.message, null) }
+                        } catch (t: Throwable) {
+                            runOnUiThread { result.error("RELEASE_ERROR", t.message, null) }
                         }
                     }
                 }
@@ -78,14 +78,33 @@ class MainActivity: FlutterFragmentActivity() {
         }
         ortSession?.close()
         val options = OrtSession.SessionOptions()
-        options.setIntraOpNumThreads(4)
+        options.setIntraOpNumThreads(2)
         ortSession = ortEnv!!.createSession(modelPath, options)
         loadedModelPath = modelPath
         return ortSession!!
     }
 
     private fun prepareBitmap448(imagePath: String, targetSize: Int = 448): Bitmap {
-        val original = BitmapFactory.decodeFile(imagePath)
+        val boundsOptions = BitmapFactory.Options().apply {
+            inJustDecodeBounds = true
+        }
+        BitmapFactory.decodeFile(imagePath, boundsOptions)
+        if (boundsOptions.outWidth <= 0 || boundsOptions.outHeight <= 0) {
+            throw IllegalArgumentException("Could not decode image bounds at $imagePath")
+        }
+
+        var sampleSize = 1
+        while (boundsOptions.outWidth / (sampleSize * 2) >= targetSize &&
+               boundsOptions.outHeight / (sampleSize * 2) >= targetSize) {
+            sampleSize *= 2
+        }
+
+        val decodeOptions = BitmapFactory.Options().apply {
+            inSampleSize = sampleSize
+            inPreferredConfig = Bitmap.Config.ARGB_8888
+        }
+
+        val original = BitmapFactory.decodeFile(imagePath, decodeOptions)
             ?: throw IllegalArgumentException("Could not decode image at $imagePath")
         val bmp = Bitmap.createBitmap(targetSize, targetSize, Bitmap.Config.ARGB_8888)
         val canvas = Canvas(bmp)

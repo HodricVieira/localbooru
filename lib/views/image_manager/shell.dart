@@ -81,28 +81,43 @@ class _ImageManagerShellState extends State<ImageManagerShell> {
     void saveImages() async {
         setState(() => isSaving = true);
         
-        final booru = await getCurrentBooru();
-        final listLength = await booru.getListLength();
+        try {
+            final booru = await getCurrentBooru();
+            final listLength = await booru.getListLength();
 
-        final List<ImageID> imaginaryIDs = preset.pages!.mapIndexed((index, preset) {
-            if(preset.replaceID != null) return preset.replaceID!;
-            return "${index + listLength}";
-        }).toList();
-        
-        for (final (index, imagePreset) in preset.pages!.indexed) {
-            if(isCorelated && preset.pages!.length > 1) {
-                final selfID = imaginaryIDs[index];
-                imagePreset.relatedImages = imaginaryIDs.where((id) => id != selfID).toList();
+            final List<ImageID> imaginaryIDs = preset.pages!.mapIndexed((index, preset) {
+                if(preset.replaceID != null) return preset.replaceID!;
+                return "${index + listLength}";
+            }).toList();
+            
+            for (final (index, imagePreset) in preset.pages!.indexed) {
+                if(isCorelated && preset.pages!.length > 1) {
+                    final selfID = imaginaryIDs[index];
+                    imagePreset.relatedImages = imaginaryIDs.where((id) => id != selfID).toList();
+                }
+                imagePreset.replaceID ??= imaginaryIDs[index];
+                imagePreset.tags ??= {"generic": ["tagme"]};
+
+                await insertImage(imagePreset, notify: false);
+                if (mounted) setState(() => savedImages++);
             }
-            imagePreset.replaceID ??= imaginaryIDs[index];
 
-            await insertImage(imagePreset);
-            setState(() => savedImages++);
+            if(saveCollection) {
+                preset.pages = imaginaryIDs.mapIndexed((idx, id) => PresetImage(replaceID: id, image: preset.pages![idx].image, tags: preset.pages![idx].tags)).toList();
+                await insertCollection(PresetCollection.fromVirtualPresetCollection(preset));
+            }
+            booruUpdateListener.update();
+            counterListener.update();
+            
+            if(context.mounted) context.pop();
+        } catch (e) {
+            if (mounted) {
+                setState(() => isSaving = false);
+                ScaffoldMessenger.of(context).showSnackBar(
+                    SnackBar(content: Text("Erro ao salvar imagens: $e")),
+                );
+            }
         }
-
-        if(saveCollection) await insertCollection(PresetCollection.fromVirtualPresetCollection(preset));
-        
-        if(context.mounted) context.pop();
     }
 
     String generateName(PresetImage imagePreset) {
@@ -170,6 +185,10 @@ class _ImageManagerShellState extends State<ImageManagerShell> {
                 }
             } catch (e) {
                 debugPrint("AutoTag failed on ${presetImage.image!.path}: $e");
+                preset.pages![index].tags ??= {"generic": ["tagme"]};
+                if (index + 1 < errorOnPages.length) {
+                    errorOnPages[index + 1] = false;
+                }
             }
             processed++;
             if (mounted) {
@@ -408,33 +427,35 @@ class _ImageManagerShellState extends State<ImageManagerShell> {
                                 setState(() => imagePage = 0);
                             }
                         },
-                        child: IndexedStack(
-                            index: imagePage + 1,
-                            children: [
-                                GeneralCollectionManagerScreen(
-                                    displayImages: List<ImageProvider?>.generate(3, (index) => preset.pages!.asMap().containsKey(index) && preset.pages![index].image != null ? FileImage(preset.pages![index].image!) : null,),
-                                    corelated: isCorelated,
-                                    onCorelatedChanged: (value) => setState(() => isCorelated = value),
-                                    saveCollectionToggle: saveCollection,
-                                    onSaveCollectionToggle: (value) => setState(() => saveCollection = value),
-                                    collection: preset,
-                                    onErrorChange: (value) => setState(() => errorOnPages[0] = value),
-                                    onMultiCompress: compressAllImages,
-                                    progressMultiCompress: progressCompressedImages,
-                                    onMultiAutoTag: autoTagAllImages,
-                                    progressMultiAutoTag: progressAutoTagImages,
-                                    statusMultiAutoTag: statusAutoTagImages,
+                        child: imagePage == -1
+                            ? GeneralCollectionManagerScreen(
+                                displayImages: List<ImageProvider?>.generate(
+                                    3,
+                                    (index) => preset.pages!.asMap().containsKey(index) && preset.pages![index].image != null
+                                        ? ResizeImage(FileImage(preset.pages![index].image!), width: 400)
+                                        : null,
                                 ),
-                                for (final (index, imagePreset) in preset.pages!.indexed) ImageManagerForm(
-                                    preset: imagePreset,
-                                    updateNotifier: updatePreset,
-                                    onChanged: (imagePreset) => setState(() => preset.pages![index] = imagePreset),
-                                    onErrorUpdate: (containsError) => setState(() => errorOnPages[index + 1] = containsError),
-                                    onMultipleImagesAdded: addMultipleImages,
-                                    showRelatedImagesCard: !isCorelated,
-                                )
-                            ],
-                        ),
+                                corelated: isCorelated,
+                                onCorelatedChanged: (value) => setState(() => isCorelated = value),
+                                saveCollectionToggle: saveCollection,
+                                onSaveCollectionToggle: (value) => setState(() => saveCollection = value),
+                                collection: preset,
+                                onErrorChange: (value) => setState(() => errorOnPages[0] = value),
+                                onMultiCompress: compressAllImages,
+                                progressMultiCompress: progressCompressedImages,
+                                onMultiAutoTag: autoTagAllImages,
+                                progressMultiAutoTag: progressAutoTagImages,
+                                statusMultiAutoTag: statusAutoTagImages,
+                            )
+                            : ImageManagerForm(
+                                key: ValueKey("form_${preset.pages![imagePage].key ?? imagePage}"),
+                                preset: preset.pages![imagePage],
+                                updateNotifier: updatePreset,
+                                onChanged: (imagePreset) => setState(() => preset.pages![imagePage] = imagePreset),
+                                onErrorUpdate: (containsError) => setState(() => errorOnPages[imagePage + 1] = containsError),
+                                onMultipleImagesAdded: addMultipleImages,
+                                showRelatedImagesCard: !isCorelated,
+                            ),
                     ),
                     // floatingActionButton: FloatingActionButton(onPressed: () => debugPrint("$errorOnPages"),),
                 )
@@ -464,33 +485,44 @@ ManageImageSendable handleSendable(VirtualPreset preset) {
 }
 
 Future<PresetListManageImageSendable?> pickFolderAndPrepareSendable(BuildContext context, {bool autoTagOnStart = true}) async {
-    final String? folderPath = await FilePicker.platform.getDirectoryPath();
-    if (folderPath == null) return null;
+    try {
+        final String? folderPath = await FilePicker.platform.getDirectoryPath();
+        if (folderPath == null) return null;
 
-    final dir = Directory(folderPath);
-    if (!await dir.exists()) return null;
+        final dir = Directory(folderPath);
+        if (!await dir.exists()) return null;
 
-    final List<File> imageFiles = [];
-    await for (final entity in dir.list(recursive: false, followLinks: false)) {
-        if (entity is File) {
-            final mime = lookupMimeType(entity.path);
-            if (mime != null && mime.startsWith("image/")) {
-                imageFiles.add(entity);
+        final List<File> imageFiles = [];
+        const supportedExts = {".jpg", ".jpeg", ".png", ".webp", ".bmp", ".gif"};
+        await for (final entity in dir.list(recursive: false, followLinks: false)) {
+            if (entity is File) {
+                final ext = p.extension(entity.path).toLowerCase();
+                final mime = lookupMimeType(entity.path);
+                if (supportedExts.contains(ext) || (mime != null && mime.startsWith("image/"))) {
+                    imageFiles.add(entity);
+                }
             }
         }
-    }
 
-    imageFiles.sort((a, b) => a.path.compareTo(b.path));
+        imageFiles.sort((a, b) => a.path.compareTo(b.path));
 
-    if (imageFiles.isEmpty) {
+        if (imageFiles.isEmpty) {
+            if (context.mounted) {
+                ScaffoldMessenger.of(context).showSnackBar(
+                    const SnackBar(content: Text("Nenhuma imagem encontrada na pasta selecionada.")),
+                );
+            }
+            return null;
+        }
+
+        final presets = imageFiles.map((f) => PresetImage(image: f, key: UniqueKey())).toList();
+        return PresetListManageImageSendable(presets, autoTagOnStart: autoTagOnStart);
+    } catch (e) {
         if (context.mounted) {
             ScaffoldMessenger.of(context).showSnackBar(
-                const SnackBar(content: Text("Nenhuma imagem encontrada na pasta selecionada.")),
+                SnackBar(content: Text("Erro ao ler pasta: $e")),
             );
         }
         return null;
     }
-
-    final presets = imageFiles.map((f) => PresetImage(image: f, key: UniqueKey())).toList();
-    return PresetListManageImageSendable(presets, autoTagOnStart: autoTagOnStart);
 }

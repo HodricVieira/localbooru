@@ -33,7 +33,7 @@ class _SliverRepoGridState extends State<SliverRepoGrid> {
     late LongPressDownDetails longTap;
     
     String? getType(String filename) {
-        final mime = lookupMimeType(filename)!;
+        final mime = lookupMimeType(filename) ?? "";
         if(mime.startsWith("video")) return "video";
         if(mime.startsWith("image/gif")) return "gif";
         return "image";
@@ -120,7 +120,7 @@ class _ImageGridState extends State<ImageGrid> {
     late Future<File> imageThumbnail;
     
     String getType(String filename) {
-        final mime = lookupMimeType(filename)!;
+        final mime = lookupMimeType(filename) ?? "";
         if(mime.startsWith("video")) return "video";
         if(mime.startsWith("image/gif")) return "gif";
         return "image";
@@ -132,7 +132,29 @@ class _ImageGridState extends State<ImageGrid> {
 
         imageThumbnail = getImageThumbnail(widget.image);
     }
+
+    @override
+    void didUpdateWidget(covariant ImageGrid oldWidget) {
+        super.didUpdateWidget(oldWidget);
+        if (oldWidget.image.id != widget.image.id || oldWidget.image.path != widget.image.path) {
+            imageThumbnail = getImageThumbnail(widget.image);
+        }
+    }
     
+    Widget _buildThumbImage(File file) {
+        final hasResize = widget.resizeSize != null;
+        final ImageProvider provider = hasResize ? ResizeImage(FileImage(file),
+            width: widget.resizeSize!.ceil(),
+            height: widget.resizeSize!.ceil(),
+            policy: ResizeImagePolicy.fit
+        ) : FileImage(file) as ImageProvider;
+        return Image(
+            image: provider,
+            fit: BoxFit.cover,
+            errorBuilder: (_, __, ___) => const Center(child: Icon(Icons.broken_image_outlined)),
+        );
+    }
+
     @override
     Widget build(context) {
         return Stack(
@@ -143,21 +165,17 @@ class _ImageGridState extends State<ImageGrid> {
                     curve: Curves.easeOut,
                     child: AspectRatio(
                         aspectRatio: 1,
-                        child: FutureBuilder(
+                        child: FutureBuilder<File>(
                             future: imageThumbnail,
                             builder: (context, snapshot) {
                                 if(snapshot.hasData) {
-                                    final thumbnail = snapshot.data!;
-                                    final hasResize = widget.resizeSize != null;
-                                    final ImageProvider provider = hasResize ? ResizeImage(FileImage(thumbnail),
-                                        width: widget.resizeSize!.ceil(),
-                                        height: widget.resizeSize!.ceil(),
-                                        policy: ResizeImagePolicy.fit
-                                    ) : FileImage(thumbnail) as ImageProvider;
-                                    return Image(
-                                        image: provider,
-                                        fit: BoxFit.cover,
-                                    );
+                                    return _buildThumbImage(snapshot.data!);
+                                }
+                                if(snapshot.hasError) {
+                                    if (getType(widget.image.filename) != "video" && widget.image.getImage().existsSync()) {
+                                        return _buildThumbImage(widget.image.getImage());
+                                    }
+                                    return const Center(child: Icon(Icons.broken_image_outlined));
                                 }
                                 return const Center(child: CircularProgressIndicator(),);
                             },

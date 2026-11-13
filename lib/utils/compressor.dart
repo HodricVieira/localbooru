@@ -40,27 +40,45 @@ Future<File> getImageThumbnail(BooruImage image) async {
 }
 
 Future<File> createThumbnail({required File input, required String outputPath}) async {
-    File outputFile;
-
-    final mime = lookupMimeType(input.path);
-    if(mime!.startsWith("video/") || mime == "image/gif") {
+    final String mime = lookupMimeType(input.path) ?? "";
+    if (mime.startsWith("video/")) {
         final hadGenerated = await generateVideoThumbnail(
             inputPath: input.path,
             outputPath: outputPath
         );
-        if(!hadGenerated) throw "Could not generate thumbnail from video";
-        outputFile = File(outputPath);
-    } else if(mime.startsWith("image/")) {
-        final compressedImage = await compressImage(ImageFile(
-            filePath: input.path,
-            rawBytes: await input.readAsBytes()
-        ));
-        outputFile = await File(outputPath).writeAsBytes(compressedImage.rawBytes);
+        if (!hadGenerated) throw "Could not generate thumbnail from video";
+        return File(outputPath);
+    } else if (mime == "image/gif") {
+        // GIFs are not supported by FcNativeVideoThumbnail on Android;
+        // try generating a static JPEG thumbnail, or fall back to the GIF itself.
+        try {
+            final compressedImage = await compressImage(ImageFile(
+                filePath: input.path,
+                rawBytes: await input.readAsBytes(),
+            ));
+            if (compressedImage.rawBytes.isNotEmpty) {
+                return await File(outputPath).writeAsBytes(compressedImage.rawBytes);
+            }
+        } catch (e) {
+            debugPrint("GIF thumbnail compression fallback to original (${input.path}): $e");
+        }
+        return input;
+    } else if (mime.startsWith("image/")) {
+        try {
+            final compressedImage = await compressImage(ImageFile(
+                filePath: input.path,
+                rawBytes: await input.readAsBytes(),
+            ));
+            if (compressedImage.rawBytes.isNotEmpty) {
+                return await File(outputPath).writeAsBytes(compressedImage.rawBytes);
+            }
+        } catch (e) {
+            debugPrint("Image thumbnail compression fallback to original (${input.path}): $e");
+        }
+        return input;
     } else {
         throw "Unknown file type";
     }
-
-    return outputFile;
 }
 
 //update to not depend on media_kit

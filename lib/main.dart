@@ -87,6 +87,7 @@ class App extends StatefulWidget {
 
 class _AppState extends State<App> {
     late StreamSubscription _intentSub;
+    late final SafeBackButtonDispatcher _backButtonDispatcher = SafeBackButtonDispatcher(router);
 
     // This widget is the root of your application.
     @override
@@ -108,7 +109,10 @@ class _AppState extends State<App> {
                             theme: theme["light"],
                             darkTheme: theme["dark"],
                             themeMode: ThemeMode.values[themeModeIndex], 
-                            routerConfig: router,
+                            routeInformationProvider: router.routeInformationProvider,
+                            routeInformationParser: router.routeInformationParser,
+                            routerDelegate: router.routerDelegate,
+                            backButtonDispatcher: _backButtonDispatcher,
                             debugShowCheckedModeBanner: true,
                         );
                     }
@@ -222,5 +226,22 @@ class _AppState extends State<App> {
             "light": ThemeData.from(colorScheme: lightColorScheme, useMaterial3: true),
             "dark": ThemeData.from(colorScheme: darkColorScheme, useMaterial3: true),
         };
+    }
+}
+
+class SafeBackButtonDispatcher extends RootBackButtonDispatcher {
+    SafeBackButtonDispatcher(this.goRouter);
+
+    final GoRouter goRouter;
+
+    @override
+    Future<bool> didPopRoute() async {
+        final bool handled = await super.didPopRoute();
+        if (handled) return true;
+        if (goRouter.canPop()) {
+            goRouter.pop();
+            return true;
+        }
+        return false;
     }
 }

@@ -6,6 +6,8 @@ import 'package:localbooru/api/preset/index.dart';
 import 'package:localbooru/components/builders.dart';
 import 'package:localbooru/components/context_menu.dart';
 import 'package:localbooru/components/dialogs/textfield_dialogs.dart';
+import 'package:localbooru/utils/listeners.dart';
+import 'package:localbooru/views/image_manager/shell.dart';
 
 class CollectionsListPage extends StatefulWidget {
     const CollectionsListPage({super.key, required this.booru});
@@ -24,7 +26,22 @@ class _CollectionsListPageState extends State<CollectionsListPage> {
     @override
     void initState() {
         super.initState();
-        collectionFuture = widget.booru.getAllCollections();
+        _refreshCollections();
+        booruUpdateListener.addListener(_refreshCollections);
+    }
+
+    @override
+    void dispose() {
+        booruUpdateListener.removeListener(_refreshCollections);
+        super.dispose();
+    }
+
+    void _refreshCollections() {
+        if (mounted) {
+            setState(() {
+                collectionFuture = widget.booru.getAllCollections();
+            });
+        }
     }
 
     void openContextMenu(Offset offset, BooruCollection collection) {
@@ -51,17 +68,29 @@ class _CollectionsListPageState extends State<CollectionsListPage> {
                 title: const Text("Collections"),
                 actions: [
                     IconButton(
+                        icon: const Icon(Icons.create_new_folder_outlined),
+                        tooltip: "Import folder as collection",
+                        onPressed: () async {
+                            final sendable = await pickFolderAndPrepareSendable(context, autoTagOnStart: true);
+                            if (sendable != null && context.mounted) {
+                                context.push("/manage_image", extra: sendable);
+                            }
+                        },
+                    ),
+                    IconButton(
                         icon: const Icon(Icons.add),
+                        tooltip: "Create collection & folder",
                         onPressed: () async {
                             final name = await showDialog<String>(
                                 context: context,
                                 builder: (context) => const AddCollectionDialog()
                             );
-                            if(name == null) return;
+                            if(name == null || name.trim().isEmpty) return;
                             await insertCollection(PresetCollection(
-                                name: name,
+                                name: name.trim(),
                                 pages: []
                             ));
+                            _refreshCollections();
                         },
                     ),
                     PopupMenuButton(

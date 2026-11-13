@@ -186,7 +186,7 @@ final router = GoRouter(
                                                                         if(!snapshot.hasData) return const Text("Loading");
                                                                         return ListTile(
                                                                             title: Text(snapshot.data!.name, style: const TextStyle(fontSize: 20.0)),
-                                                                            subtitle: Text("Collection ID ${snapshot.data!.id}", style: const TextStyle(fontSize: 14.0)),
+                                                                            subtitle: Text("Collection ID ${snapshot.data!.id} • files/${snapshot.data!.folder ?? snapshot.data!.name}", style: const TextStyle(fontSize: 14.0)),
                                                                         );
                                                                     }
                                                                 ));
@@ -201,8 +201,62 @@ final router = GoRouter(
                                                             actions: [
                                                                 IconButton(
                                                                     icon: const Icon(Icons.add_photo_alternate_outlined),
-                                                                    tooltip: "Add image",
-                                                                    onPressed: () => context.push("/settings/booru/collections?id=$id"),
+                                                                    tooltip: "Add image to collection",
+                                                                    onPressed: () async {
+                                                                        final choice = await showDialog<String>(
+                                                                            context: context,
+                                                                            builder: (ctx) => SimpleDialog(
+                                                                                title: const Text("Add images to this collection"),
+                                                                                children: [
+                                                                                    SimpleDialogOption(
+                                                                                        onPressed: () => Navigator.of(ctx).pop("new_image"),
+                                                                                        child: const ListTile(
+                                                                                            leading: Icon(Icons.add_a_photo_outlined),
+                                                                                            title: Text("Import new image(s)"),
+                                                                                            subtitle: Text("Tag & save new images into this collection's folder"),
+                                                                                        ),
+                                                                                    ),
+                                                                                    SimpleDialogOption(
+                                                                                        onPressed: () => Navigator.of(ctx).pop("new_folder"),
+                                                                                        child: const ListTile(
+                                                                                            leading: Icon(Icons.create_new_folder_outlined),
+                                                                                            title: Text("Import folder & auto-tag"),
+                                                                                            subtitle: Text("Auto-tag a folder and put its images into this collection's folder"),
+                                                                                        ),
+                                                                                    ),
+                                                                                    SimpleDialogOption(
+                                                                                        onPressed: () => Navigator.of(ctx).pop("existing"),
+                                                                                        child: const ListTile(
+                                                                                            leading: Icon(Icons.photo_library_outlined),
+                                                                                            title: Text("Select existing Booru images"),
+                                                                                            subtitle: Text("Choose existing images and move them into this collection's folder"),
+                                                                                        ),
+                                                                                    ),
+                                                                                ],
+                                                                            ),
+                                                                        );
+                                                                        if (!context.mounted || choice == null) return;
+                                                                        if (choice == "new_image") {
+                                                                            context.push(
+                                                                                "/manage_image",
+                                                                                extra: PresetManageImageSendable(
+                                                                                    PresetImage(),
+                                                                                    targetCollectionId: id,
+                                                                                ),
+                                                                            );
+                                                                        } else if (choice == "new_folder") {
+                                                                            final sendable = await pickFolderAndPrepareSendable(
+                                                                                context,
+                                                                                autoTagOnStart: true,
+                                                                                targetCollectionId: id,
+                                                                            );
+                                                                            if (sendable != null && context.mounted) {
+                                                                                context.push("/manage_image", extra: sendable);
+                                                                            }
+                                                                        } else if (choice == "existing") {
+                                                                            context.push("/settings/booru/collections?id=$id");
+                                                                        }
+                                                                    },
                                                                 ),
                                                             ],
                                                         );

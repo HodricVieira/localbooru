@@ -13,6 +13,7 @@ final Map<String, dynamic> settingsDefaults = {
     "autotag_accuracy": 0.35,
     "autotag_model": "wd-convnext-v3-mobile",
     "autotag_mode": "auto",
+    "file_import_mode": "copy",
     "thumbnail_quality": 2.0,
     "update": true,
     "gif_video": false,

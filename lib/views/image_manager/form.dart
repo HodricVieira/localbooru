@@ -25,6 +25,11 @@ class ImageManagerForm extends StatefulWidget {
         this.onErrorUpdate,
         this.showRelatedImagesCard = true,
         this.updateNotifier,
+        this.moveFiles,
+        this.onMoveFilesChanged,
+        this.existingCollections = const [],
+        this.selectedExistingCollectionId,
+        this.onSelectedExistingCollectionChanged,
     });
 
     final PresetImage? preset;
@@ -35,6 +40,11 @@ class ImageManagerForm extends StatefulWidget {
     final void Function(List<File> files)? onMultipleImagesAdded;
     final Future<void> Function()? onAutoTagAll;
     final ChangeNotifier? updateNotifier;
+    final bool? moveFiles;
+    final void Function(bool value)? onMoveFilesChanged;
+    final List<BooruCollection> existingCollections;
+    final CollectionID? selectedExistingCollectionId;
+    final void Function(CollectionID? id)? onSelectedExistingCollectionChanged;
 
     @override
     State<ImageManagerForm> createState() => _ImageManagerFormState();
@@ -118,6 +128,7 @@ class _ImageManagerFormState extends State<ImageManagerForm> {
         final validation = _formKey.currentState!.validate();
         widget.onChanged(PresetImage(
             image: File(loadedImage),
+            originalImage: widget.preset?.originalImage ?? (loadedImage.isNotEmpty ? File(loadedImage) : null),
             tags: {
                 "generic": tagController.text.split(" ").where((e) => e.isNotEmpty).toList(),
                 "artist": artistTagController.text.split(" ").where((e) => e.isNotEmpty).toList(),
@@ -224,6 +235,39 @@ class _ImageManagerFormState extends State<ImageManagerForm> {
                             currentValue: loadedImage,
                             orientation: orientation,
                         ),
+                        if (!isEditing && widget.moveFiles != null)
+                            SwitchListTile(
+                                contentPadding: EdgeInsets.zero,
+                                title: const Text("Move file instead of copying"),
+                                subtitle: Text(widget.moveFiles!
+                                    ? "Move into booru/files (removes original file)"
+                                    : "Copy into booru/files (keeps original file)"),
+                                secondary: Icon(widget.moveFiles! ? Icons.drive_file_move : Icons.copy_all),
+                                value: widget.moveFiles!,
+                                onChanged: widget.onMoveFilesChanged,
+                            ),
+                        if (!isEditing && widget.existingCollections.isNotEmpty && widget.onSelectedExistingCollectionChanged != null)
+                            Padding(
+                                padding: const EdgeInsets.only(top: 4.0),
+                                child: DropdownButtonFormField<CollectionID?>(
+                                    value: widget.selectedExistingCollectionId,
+                                    decoration: const InputDecoration(
+                                        labelText: "Add to Collection (Folder)",
+                                        prefixIcon: Icon(Icons.folder_open),
+                                    ),
+                                    items: [
+                                        const DropdownMenuItem<CollectionID?>(
+                                            value: null,
+                                            child: Text("None (Root files/)"),
+                                        ),
+                                        ...widget.existingCollections.map((col) => DropdownMenuItem<CollectionID?>(
+                                            value: col.id,
+                                            child: Text("${col.name} (files/${col.folder ?? col.name})"),
+                                        )),
+                                    ],
+                                    onChanged: widget.onSelectedExistingCollectionChanged,
+                                ),
+                            ),
                         const SizedBox(height: 16,),
                         Wrap(
                             alignment: WrapAlignment.spaceBetween,

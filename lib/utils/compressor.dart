@@ -23,8 +23,10 @@ Future<File> getImageThumbnail(BooruImage image) async {
     final filename = image.filename;
     final thumbDir = await obtainThumbnailDirectory();
     
-    File thumbnailFile = File("${p.join(thumbDir.path, p.basenameWithoutExtension(filename))}.jpg");
+    final legacyThumb = File("${p.join(thumbDir.path, p.basenameWithoutExtension(filename))}.jpg");
+    File thumbnailFile = File("${p.join(thumbDir.path, "${image.id}_${p.basenameWithoutExtension(filename)}")}.jpg");
     if(await thumbnailFile.exists()) return thumbnailFile;
+    if(await legacyThumb.exists()) return legacyThumb;
 
     debugPrint("Compressing $filename");
 

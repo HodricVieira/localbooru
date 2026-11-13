@@ -43,9 +43,12 @@ class Booru {
             _ => null
         };
 
+        final String rawRel = fileToCheck["filename"].toString().replaceAll('\\', '/');
+        final List<String> relSegments = rawRel.split('/').where((s) => s.isNotEmpty).toList();
+
         return BooruImage(
             id: id,
-            path: p.join(path, "files", fileToCheck["filename"]),
+            path: p.joinAll([path, "files", ...relSegments]),
             tags: fileToCheck["tags"],
             rating: rating,
             note: fileToCheck["note"],
@@ -170,10 +173,16 @@ class Booru {
             if(!matchingCollection.containsKey(metadata)) throw "Collection $id doesn't contain property $metadata";
         }
 
+        final String collectionName = matchingCollection["name"] as String;
+        final String folderName = (matchingCollection["folder"] as String?)?.trim().isNotEmpty == true
+            ? matchingCollection["folder"] as String
+            : sanitizeCollectionFolderName(collectionName);
+
         return BooruCollection(
             pages: List<ImageID>.from(matchingCollection["pages"]),
-            name: matchingCollection["name"] as String,
-            id: id
+            name: collectionName,
+            id: id,
+            folder: folderName,
         );
     }
     Future<List<BooruCollection>> getAllCollections() async {
@@ -220,11 +229,12 @@ class BooruImage {
 
 typedef CollectionID = String;
 class BooruCollection {
-    BooruCollection({required this.pages, required this.name, required this.id});
+    BooruCollection({required this.pages, required this.name, required this.id, this.folder});
 
     List<ImageID> pages;
     String name;
     CollectionID id;
+    String? folder;
 }
 
 enum Rating {safe, questionable, explicit, illegal}

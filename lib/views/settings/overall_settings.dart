@@ -41,6 +41,7 @@ class _OverallSettingsState extends State<OverallSettings> {
     late String _counter;
     late String _autotagModel;
     late String _autotagMode;
+    late String _fileImportMode;
     bool _isModelDownloaded = false;
     bool _isDownloadingModel = false;
     double _downloadProgress = 0.0;
@@ -74,6 +75,7 @@ class _OverallSettingsState extends State<OverallSettings> {
         _autotagAccuracy = widget.prefs.getDouble("autotag_accuracy") ?? settingsDefaults["autotag_accuracy"];
         _autotagModel = widget.prefs.getString("autotag_model") ?? settingsDefaults["autotag_model"];
         _autotagMode = widget.prefs.getString("autotag_mode") ?? settingsDefaults["autotag_mode"];
+        _fileImportMode = widget.prefs.getString("file_import_mode") ?? settingsDefaults["file_import_mode"];
         _thumbnailQuality = widget.prefs.getDouble("thumbnail_quality") ?? settingsDefaults["thumbnail_quality"];
         _pageSizeController.text = (widget.prefs.getInt("page_size") ?? settingsDefaults["page_size"]).toString();
         _monetTheme = widget.prefs.getBool("monet") ?? settingsDefaults["monet"];
@@ -408,6 +410,41 @@ class _OverallSettingsState extends State<OverallSettings> {
                 ),
 
                 const SmallHeader("Behavior"),
+                ListTile(
+                    leading: Icon(_fileImportMode == "move" ? Icons.drive_file_move : Icons.copy_all),
+                    title: const Text("File storage action on import"),
+                    subtitle: Text(_fileImportMode == "move"
+                        ? "Move files into booru/files (removes original file)"
+                        : "Copy files into booru/files (keeps original file)"),
+                    onTap: () async {
+                        final selected = await showDialog<String>(
+                            context: context,
+                            builder: (ctx) => SimpleDialog(
+                                title: const Text("When adding images to Booru"),
+                                children: [
+                                    RadioListTile<String>(
+                                        value: "copy",
+                                        groupValue: _fileImportMode,
+                                        title: const Text("Copy files (Default)"),
+                                        subtitle: const Text("Copies images to the booru's files folder and keeps the originals"),
+                                        onChanged: (val) => Navigator.of(ctx).pop(val),
+                                    ),
+                                    RadioListTile<String>(
+                                        value: "move",
+                                        groupValue: _fileImportMode,
+                                        title: const Text("Move files"),
+                                        subtitle: const Text("Moves images to the booru's files folder and deletes the originals"),
+                                        onChanged: (val) => Navigator.of(ctx).pop(val),
+                                    ),
+                                ],
+                            ),
+                        );
+                        if (selected != null) {
+                            await widget.prefs.setString("file_import_mode", selected);
+                            setState(() => _fileImportMode = selected);
+                        }
+                    },
+                ),
                 SwitchListTile(
                     title: const Text("Display GIFs as videos"),
                     secondary: const Icon(Icons.gif),

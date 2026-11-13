@@ -47,18 +47,62 @@ class _ImageManagerShellState extends State<ImageManagerShell> {
     int imagePage = 0;
 
     bool isCorelated = false;
+    bool moveFiles = false;
+    String? sourceFolderPath;
+    String? sourceFolderName;
+    List<BooruCollection> existingCollections = [];
+    CollectionID? selectedExistingCollectionId;
 
 
     AcessibleNotifyListenerNotifier updatePreset = AcessibleNotifyListenerNotifier();
 
+    Future<void> _loadImportModePref() async {
+        final prefs = await SharedPreferences.getInstance();
+        final mode = prefs.getString("file_import_mode") ?? settingsDefaults["file_import_mode"];
+        if (mounted) {
+            setState(() => moveFiles = (mode == "move"));
+        }
+    }
+
+    Future<void> _loadExistingCollections() async {
+        try {
+            final booru = await getCurrentBooru();
+            final cols = await booru.getAllCollections();
+            if (mounted) {
+                setState(() => existingCollections = cols);
+            }
+        } catch (_) {}
+    }
+
+    Future<void> _setMoveFiles(bool value) async {
+        setState(() => moveFiles = value);
+        final prefs = await SharedPreferences.getInstance();
+        await prefs.setString("file_import_mode", value ? "move" : "copy");
+    }
+
     @override
     void initState() {
         super.initState();
+        _loadImportModePref();
+        _loadExistingCollections();
         if(widget.sendable == null) preset = VirtualPresetCollection(pages: [PresetImage()]);
-        if(widget.sendable is PresetManageImageSendable) preset = VirtualPresetCollection(pages: [(widget.sendable as PresetManageImageSendable).preset]);
+        if(widget.sendable is PresetManageImageSendable) {
+            final singleSendable = widget.sendable as PresetManageImageSendable;
+            preset = VirtualPresetCollection(pages: [singleSendable.preset]);
+            selectedExistingCollectionId = singleSendable.targetCollectionId;
+        }
         if(widget.sendable is PresetListManageImageSendable) {
             final listSendable = widget.sendable as PresetListManageImageSendable;
-            preset = VirtualPresetCollection(pages: listSendable.presets);
+            preset = VirtualPresetCollection(
+                pages: listSendable.presets,
+                name: listSendable.sourceFolderName,
+            );
+            sourceFolderPath = listSendable.sourceFolderPath;
+            sourceFolderName = listSendable.sourceFolderName;
+            selectedExistingCollectionId = listSendable.targetCollectionId;
+            if (listSendable.sourceFolderName != null && listSendable.targetCollectionId == null) {
+                saveCollection = true;
+            }
             if (listSendable.autoTagOnStart) {
                 imagePage = -1;
             }
@@ -89,6 +133,21 @@ class _ImageManagerShellState extends State<ImageManagerShell> {
                 if(preset.replaceID != null) return preset.replaceID!;
                 return "${index + listLength}";
             }).toList();
+
+            String? targetSubfolder;
+            if (saveCollection) {
+                final colName = (preset.name?.trim().isNotEmpty == true)
+                    ? preset.name!.trim()
+                    : (sourceFolderName ?? "Collection");
+                preset.name = colName;
+                targetSubfolder = sanitizeCollectionFolderName(colName);
+            } else if (selectedExistingCollectionId != null) {
+                final existingCol = existingCollections.firstWhereOrNull((c) => c.id == selectedExistingCollectionId)
+                    ?? await booru.getCollection(selectedExistingCollectionId!);
+                if (existingCol != null) {
+                    targetSubfolder = existingCol.folder ?? sanitizeCollectionFolderName(existingCol.name);
+                }
+            }
             
             for (final (index, imagePreset) in preset.pages!.indexed) {
                 if(isCorelated && preset.pages!.length > 1) {
@@ -98,13 +157,34 @@ class _ImageManagerShellState extends State<ImageManagerShell> {
                 imagePreset.replaceID ??= imaginaryIDs[index];
                 imagePreset.tags ??= {"generic": ["tagme"]};
 
-                await insertImage(imagePreset, notify: false);
+                await insertImage(
+                    imagePreset,
+                    notify: false,
+                    moveFile: moveFiles,
+                    targetSubfolder: targetSubfolder,
+                );
                 if (mounted) setState(() => savedImages++);
             }
 
             if(saveCollection) {
                 preset.pages = imaginaryIDs.mapIndexed((idx, id) => PresetImage(replaceID: id, image: preset.pages![idx].image, tags: preset.pages![idx].tags)).toList();
-                await insertCollection(PresetCollection.fromVirtualPresetCollection(preset));
+                await insertCollection(PresetCollection.fromVirtualPresetCollection(preset), notify: false);
+            } else if (selectedExistingCollectionId != null) {
+                await addImagesToCollection(selectedExistingCollectionId!, imaginaryIDs, notify: false);
+            }
+
+            if (moveFiles && sourceFolderPath != null) {
+                try {
+                    final sourceDir = Directory(sourceFolderPath!);
+                    if (!p.isWithin(booru.path, sourceDir.path) &&
+                        !p.equals(booru.path, sourceDir.path) &&
+                        await sourceDir.exists() &&
+                        await sourceDir.list().isEmpty) {
+                        await sourceDir.delete();
+                    }
+                } catch (e) {
+                    debugPrint("Could not remove empty source folder ($sourceFolderPath): $e");
+                }
             }
             booruUpdateListener.update();
             counterListener.update();
@@ -323,6 +403,13 @@ class _ImageManagerShellState extends State<ImageManagerShell> {
                                                 _scaffoldKey.currentState!.closeEndDrawer();
                                             },
                                         ),
+                                        SwitchListTile(
+                                            title: const Text("Move files"),
+                                            subtitle: Text(moveFiles ? "Move to booru/files" : "Copy to booru/files"),
+                                            secondary: Icon(moveFiles ? Icons.drive_file_move : Icons.copy_all),
+                                            value: moveFiles,
+                                            onChanged: _setMoveFiles,
+                                        ),
                                         const Divider(),
                                         ...List.generate(preset.pages!.length, (index) => ListTile(
                                             title: Text(generateName(preset.pages![index])),
@@ -369,6 +456,12 @@ class _ImageManagerShellState extends State<ImageManagerShell> {
                                                 _scaffoldKey.currentState!.closeEndDrawer();
                                                 final folderSendable = await pickFolderAndPrepareSendable(context);
                                                 if (folderSendable != null && mounted) {
+                                                    sourceFolderPath = folderSendable.sourceFolderPath;
+                                                    sourceFolderName = folderSendable.sourceFolderName;
+                                                    if (folderSendable.sourceFolderName != null && selectedExistingCollectionId == null) {
+                                                        preset.name = folderSendable.sourceFolderName;
+                                                        saveCollection = true;
+                                                    }
                                                     if (preset.pages!.length == 1 && preset.pages!.first.image == null) {
                                                         preset.pages = folderSendable.presets;
                                                         errorOnPages = [false, ...List.generate(folderSendable.presets.length, (_) => true)];
@@ -459,8 +552,14 @@ class _ImageManagerShellState extends State<ImageManagerShell> {
                                 ),
                                 corelated: isCorelated,
                                 onCorelatedChanged: (value) => setState(() => isCorelated = value),
+                                moveFiles: moveFiles,
+                                onMoveFilesChanged: _setMoveFiles,
+                                sourceFolderName: sourceFolderName,
                                 saveCollectionToggle: saveCollection,
                                 onSaveCollectionToggle: (value) => setState(() => saveCollection = value),
+                                existingCollections: existingCollections,
+                                selectedExistingCollectionId: selectedExistingCollectionId,
+                                onSelectedExistingCollectionChanged: (colId) => setState(() => selectedExistingCollectionId = colId),
                                 collection: preset,
                                 onErrorChange: (value) => setState(() => errorOnPages[0] = value),
                                 onMultiCompress: compressAllImages,
@@ -476,6 +575,17 @@ class _ImageManagerShellState extends State<ImageManagerShell> {
                                 onChanged: (imagePreset) => setState(() => preset.pages![imagePage] = imagePreset),
                                 onErrorUpdate: (containsError) => setState(() => errorOnPages[imagePage + 1] = containsError),
                                 onMultipleImagesAdded: addMultipleImages,
+                                moveFiles: moveFiles,
+                                onMoveFilesChanged: _setMoveFiles,
+                                existingCollections: existingCollections,
+                                selectedExistingCollectionId: selectedExistingCollectionId,
+                                onSelectedExistingCollectionChanged: (colId) => setState(() {
+                                    selectedExistingCollectionId = colId;
+                                    if (colId != null) {
+                                        saveCollection = false;
+                                        errorOnPages[0] = false;
+                                    }
+                                }),
                                 onAutoTagAll: preset.pages!.length > 1
                                     ? () async {
                                         setState(() => imagePage = -1);
@@ -494,13 +604,23 @@ class _ImageManagerShellState extends State<ImageManagerShell> {
 
 abstract class ManageImageSendable {}
 class PresetManageImageSendable extends ManageImageSendable {
-    PresetManageImageSendable(this.preset);
+    PresetManageImageSendable(this.preset, {this.targetCollectionId});
     PresetImage preset;
+    CollectionID? targetCollectionId;
 }
 class PresetListManageImageSendable extends ManageImageSendable {
-    PresetListManageImageSendable(this.presets, {this.autoTagOnStart = false});
+    PresetListManageImageSendable(
+        this.presets, {
+        this.autoTagOnStart = false,
+        this.sourceFolderPath,
+        this.sourceFolderName,
+        this.targetCollectionId,
+    });
     List<PresetImage> presets;
     bool autoTagOnStart;
+    String? sourceFolderPath;
+    String? sourceFolderName;
+    CollectionID? targetCollectionId;
 }
 class VirtualPresetManageImageSendable extends ManageImageSendable {
     VirtualPresetManageImageSendable(this.preset);
@@ -512,7 +632,11 @@ ManageImageSendable handleSendable(VirtualPreset preset) {
     else return PresetManageImageSendable(preset as PresetImage);
 }
 
-Future<PresetListManageImageSendable?> pickFolderAndPrepareSendable(BuildContext context, {bool autoTagOnStart = true}) async {
+Future<PresetListManageImageSendable?> pickFolderAndPrepareSendable(
+    BuildContext context, {
+    bool autoTagOnStart = true,
+    CollectionID? targetCollectionId,
+}) async {
     try {
         final String? folderPath = await FilePicker.platform.getDirectoryPath();
         if (folderPath == null) return null;
@@ -544,7 +668,13 @@ Future<PresetListManageImageSendable?> pickFolderAndPrepareSendable(BuildContext
         }
 
         final presets = imageFiles.map((f) => PresetImage(image: f, key: UniqueKey())).toList();
-        return PresetListManageImageSendable(presets, autoTagOnStart: autoTagOnStart);
+        return PresetListManageImageSendable(
+            presets,
+            autoTagOnStart: autoTagOnStart,
+            sourceFolderPath: folderPath,
+            sourceFolderName: p.basename(folderPath),
+            targetCollectionId: targetCollectionId,
+        );
     } catch (e) {
         if (context.mounted) {
             ScaffoldMessenger.of(context).showSnackBar(

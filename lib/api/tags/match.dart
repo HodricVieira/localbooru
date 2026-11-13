@@ -56,7 +56,8 @@ Future<bool> checkIfFileRespectsTag({required Map file, required Tag tag}) async
                     (tag.value == "animated" && (mime.startsWith("video/") || mime == "image/gif")) ||
                     (tag.value == "static" && (mime.startsWith("image/") && mime != "image/gif"));
             case "file":
-                return wildcardMatch(file["filename"], tag.value);
+                return wildcardMatch(p.basename(file["filename"].toString()), tag.value) ||
+                    wildcardMatch(file["filename"].toString(), tag.value);
             case "source":
                 final List<String> sources = List<String>.from(file["sources"]);
                 return sources.any((source) => wildcardMatch(Uri.parse(source).host, tag.value)) || 

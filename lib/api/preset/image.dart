@@ -3,9 +3,12 @@ part of preset;
 
 // presets are essentially a format that represents a BooruImage before it gets added
 class PresetImage extends VirtualPreset{
-    PresetImage({this.image, this.tags, this.sources, this.replaceID, this.rating, this.relatedImages, this.note, super.key});
+    PresetImage({this.image, this.originalImage, this.tags, this.sources, this.replaceID, this.rating, this.relatedImages, this.note, super.key}) {
+        originalImage ??= image;
+    }
 
     File? image;
+    File? originalImage;
     Map<String, List<String>>? tags;
     List<String>? sources;
     Rating? rating;

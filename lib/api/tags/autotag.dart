@@ -307,6 +307,19 @@ Rating? _mapWdRating(Map<String, double> ratingScores) {
 }
 
 Future<AutoTagDetailedResult> autoTagDetailed(File file, {double? threshold}) async {
+    if (isVideoFile(file.path)) {
+        return AutoTagDetailedResult(
+            allTags: {"video": 1.0},
+            separatedTags: {
+                "generic": ["video"],
+                "artist": [],
+                "character": [],
+                "copyright": [],
+                "species": [],
+            },
+        );
+    }
+
     final prefs = await SharedPreferences.getInstance();
     final double filterThreshold = threshold ?? (prefs.getDouble("autotag_accuracy") ?? settingsDefaults["autotag_accuracy"]);
     final String selectedModelId = prefs.getString("autotag_model") ?? settingsDefaults["autotag_model"];

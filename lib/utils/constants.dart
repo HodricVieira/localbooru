@@ -3,6 +3,8 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:localbooru/api/index.dart';
 import 'package:localbooru/utils/platform_tools.dart';
+import 'package:mime/mime.dart';
+import 'package:path/path.dart' as p;
 import 'package:super_clipboard/super_clipboard.dart';
 
 final Map<String, dynamic> settingsDefaults = {
@@ -121,6 +123,23 @@ abstract class SuperFormats {
     static String? getFileExtensionFromFormat(SimpleFileFormat format) {
         return _lookupTable.entries.firstWhere((e) => e.value == format,).key;
     }
+}
+
+const Set<String> supportedImageExtensions = {".jpg", ".jpeg", ".png", ".webp", ".bmp", ".gif"};
+const Set<String> supportedVideoExtensions = {".mp4", ".webm", ".mpeg", ".mpg", ".mov", ".mkv", ".avi", ".m4v", ".3gp", ".flv", ".wmv"};
+
+/// Returns true if [filePath] points to a video file based on MIME type or file extension.
+bool isVideoFile(String filePath) {
+    final mime = lookupMimeType(filePath);
+    if (mime != null && mime.startsWith("video/")) return true;
+    return supportedVideoExtensions.contains(p.extension(filePath).toLowerCase());
+}
+
+/// Returns true if [filePath] points to a supported image file based on MIME type or file extension.
+bool isImageFile(String filePath) {
+    final mime = lookupMimeType(filePath);
+    if (mime != null && mime.startsWith("image/")) return true;
+    return supportedImageExtensions.contains(p.extension(filePath).toLowerCase());
 }
 
 IconData getRatingIcon(Rating? rating) {

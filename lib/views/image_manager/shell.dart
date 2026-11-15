@@ -20,7 +20,6 @@ import 'package:localbooru/utils/platform_tools.dart';
 import 'package:localbooru/views/image_manager/components/image_upload.dart';
 import 'package:localbooru/views/image_manager/form.dart';
 import 'package:localbooru/views/image_manager/general_collection_manager.dart';
-import 'package:mime/mime.dart';
 import 'package:path/path.dart' as p;
 import 'package:shared_preferences/shared_preferences.dart';
 
@@ -216,13 +215,16 @@ class _ImageManagerShellState extends State<ImageManagerShell> {
     }
 
     void compressAllImages() async {
+        final presetsToCompressLength = preset.pages!.where((image) => image.image != null && !isVideoFile(image.image!.path)).length;
+        if (presetsToCompressLength == 0) return;
         setState(() {progressCompressedImages = 0;});
-        final presetsToCompressLength = preset.pages!.where((image) => image.image != null,).length;
+        int compressedCount = 0;
         for (final (index, presetImage) in preset.pages!.indexed) {
-            if(presetImage.image == null) continue;
+            if(presetImage.image == null || isVideoFile(presetImage.image!.path)) continue;
             final file = await compress(presetImage.image!);
             preset.pages![index].image = file;
-            setState(() {progressCompressedImages = index / presetsToCompressLength;});
+            compressedCount++;
+            setState(() {progressCompressedImages = compressedCount / presetsToCompressLength;});
         }
         updatePreset.update();
         setState(() {progressCompressedImages = null;});
@@ -242,13 +244,42 @@ class _ImageManagerShellState extends State<ImageManagerShell> {
 
         int processed = 0;
         int failed = 0;
+        int skippedVideos = 0;
         String? lastError;
 
         for (final (index, presetImage) in preset.pages!.indexed) {
             if (presetImage.image == null) continue;
             if (!mounted) return;
+            final filePath = presetImage.image!.path;
+
+            if (isVideoFile(filePath)) {
+                setState(() {
+                    statusAutoTagImages = "Vídeo ${processed + 1} / $total (${p.basename(filePath)}): adicionando tag 'video'...";
+                });
+                final existingTags = presetImage.tags ?? {};
+                final Map<String, List<String>> mergedTags = {};
+                for (final type in ["generic", "artist", "character", "copyright", "species"]) {
+                    mergedTags[type] = (existingTags[type] ?? []).where((e) => e.isNotEmpty && e != "tagme").toList();
+                }
+                if (!mergedTags["generic"]!.contains("video")) {
+                    mergedTags["generic"]!.add("video");
+                }
+                preset.pages![index].tags = mergedTags;
+                if (index + 1 < errorOnPages.length) {
+                    errorOnPages[index + 1] = false;
+                }
+                skippedVideos++;
+                processed++;
+                if (mounted) {
+                    setState(() {
+                        progressAutoTagImages = processed / total;
+                    });
+                }
+                continue;
+            }
+
             setState(() {
-                statusAutoTagImages = "Tagging ${processed + 1} / $total (${p.basename(presetImage.image!.path)})...";
+                statusAutoTagImages = "Tagging ${processed + 1} / $total (${p.basename(filePath)})...";
             });
             try {
                 final detailed = await autoTagDetailed(presetImage.image!, threshold: threshold);
@@ -281,7 +312,7 @@ class _ImageManagerShellState extends State<ImageManagerShell> {
             } catch (e) {
                 failed++;
                 lastError = e.toString();
-                debugPrint("AutoTag failed on ${presetImage.image!.path}: $e");
+                debugPrint("AutoTag failed on $filePath: $e");
                 preset.pages![index].tags ??= {"generic": ["tagme"]};
                 if (index + 1 < errorOnPages.length) {
                     errorOnPages[index + 1] = false;
@@ -300,9 +331,15 @@ class _ImageManagerShellState extends State<ImageManagerShell> {
                 progressAutoTagImages = null;
                 statusAutoTagImages = null;
             });
-            final message = failed == 0
-                ? "Auto-tagging concluído para $processed imagens!"
-                : "Auto-tagging: ${processed - failed}/$processed concluídas ($failed falharam: $lastError)";
+            final taggedImages = processed - failed - skippedVideos;
+            final String message;
+            if (failed == 0 && skippedVideos == 0) {
+                message = "Auto-tagging concluído para $processed imagens!";
+            } else if (failed == 0) {
+                message = "Auto-tagging concluído: $taggedImages imagem(ns) tagueada(s), $skippedVideos vídeo(s) marcado(s) com 'video'.";
+            } else {
+                message = "Auto-tagging: $taggedImages/$processed concluídas ($skippedVideos vídeo(s) com tag 'video', $failed falharam: $lastError)";
+            }
             ScaffoldMessenger.of(context).showSnackBar(
                 SnackBar(
                     content: Text(message),
@@ -413,7 +450,9 @@ class _ImageManagerShellState extends State<ImageManagerShell> {
                                         const Divider(),
                                         ...List.generate(preset.pages!.length, (index) => ListTile(
                                             title: Text(generateName(preset.pages![index])),
-                                            leading: const Icon(Icons.image_outlined),
+                                            leading: Icon(preset.pages![index].image != null && isVideoFile(preset.pages![index].image!.path)
+                                                ? Icons.videocam_outlined
+                                                : Icons.image_outlined),
                                             textColor: imagePage == index ? Theme.of(context).colorScheme.primary : null,
                                             iconColor: imagePage == index ? Theme.of(context).colorScheme.primary : null,
                                             onTap: imagePage == index ? null : () {
@@ -544,12 +583,18 @@ class _ImageManagerShellState extends State<ImageManagerShell> {
                         },
                         child: imagePage == -1
                             ? GeneralCollectionManagerScreen(
-                                displayImages: List<ImageProvider?>.generate(
-                                    3,
-                                    (index) => preset.pages!.asMap().containsKey(index) && preset.pages![index].image != null
-                                        ? ResizeImage(FileImage(preset.pages![index].image!), width: 400)
-                                        : null,
-                                ),
+                                displayImages: () {
+                                    final previewPages = preset.pages!
+                                        .where((page) => page.image != null && !isVideoFile(page.image!.path))
+                                        .take(3)
+                                        .toList();
+                                    return List<ImageProvider?>.generate(
+                                        3,
+                                        (index) => index < previewPages.length
+                                            ? ResizeImage(FileImage(previewPages[index].image!), width: 400)
+                                            : null,
+                                    );
+                                }(),
                                 corelated: isCorelated,
                                 onCorelatedChanged: (value) => setState(() => isCorelated = value),
                                 moveFiles: moveFiles,
@@ -644,30 +689,25 @@ Future<PresetListManageImageSendable?> pickFolderAndPrepareSendable(
         final dir = Directory(folderPath);
         if (!await dir.exists()) return null;
 
-        final List<File> imageFiles = [];
-        const supportedExts = {".jpg", ".jpeg", ".png", ".webp", ".bmp", ".gif"};
+        final List<File> mediaFiles = [];
         await for (final entity in dir.list(recursive: false, followLinks: false)) {
-            if (entity is File) {
-                final ext = p.extension(entity.path).toLowerCase();
-                final mime = lookupMimeType(entity.path);
-                if (supportedExts.contains(ext) || (mime != null && mime.startsWith("image/"))) {
-                    imageFiles.add(entity);
-                }
+            if (entity is File && (isImageFile(entity.path) || isVideoFile(entity.path))) {
+                mediaFiles.add(entity);
             }
         }
 
-        imageFiles.sort((a, b) => a.path.compareTo(b.path));
+        mediaFiles.sort((a, b) => a.path.compareTo(b.path));
 
-        if (imageFiles.isEmpty) {
+        if (mediaFiles.isEmpty) {
             if (context.mounted) {
                 ScaffoldMessenger.of(context).showSnackBar(
-                    const SnackBar(content: Text("Nenhuma imagem encontrada na pasta selecionada.")),
+                    const SnackBar(content: Text("Nenhuma imagem ou vídeo encontrado na pasta selecionada.")),
                 );
             }
             return null;
         }
 
-        final presets = imageFiles.map((f) => PresetImage(image: f, key: UniqueKey())).toList();
+        final presets = mediaFiles.map((f) => PresetImage(image: f, key: UniqueKey())).toList();
         return PresetListManageImageSendable(
             presets,
             autoTagOnStart: autoTagOnStart,

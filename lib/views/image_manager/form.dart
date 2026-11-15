@@ -146,7 +146,25 @@ class _ImageManagerFormState extends State<ImageManagerForm> {
         if(widget.onErrorUpdate != null) widget.onErrorUpdate!(!validation);
     }
 
+    void _addVideoTagIfMissing() {
+        final currentTags = tagController.text
+            .split(" ")
+            .where((e) => e.isNotEmpty && e != "tagme")
+            .toList();
+        if (!currentTags.contains("video")) {
+            currentTags.add("video");
+            tagController.text = currentTags.join(" ");
+        }
+    }
+
     void fetchTags() async {
+        if (isVideoFile(loadedImage)) {
+            setState(() {
+                _addVideoTagIfMissing();
+            });
+            sendPreset();
+            return;
+        }
         final prefs = await SharedPreferences.getInstance();
         setState(() => isGeneratingTags = true);
         final double threshold = prefs.getDouble("autotag_accuracy") ?? settingsDefaults["autotag_accuracy"];
@@ -220,7 +238,13 @@ class _ImageManagerFormState extends State<ImageManagerForm> {
                     children: [
                         ImageUploadForm(
                             onChanged: (value) {
-                                setState(() => loadedImage = value.first.path);
+                                final firstFile = value.first;
+                                setState(() {
+                                    loadedImage = firstFile.path;
+                                    if (isVideoFile(firstFile.path)) {
+                                        _addVideoTagIfMissing();
+                                    }
+                                });
                                 sendPreset();
                                 if(value.length > 1 && widget.onMultipleImagesAdded != null) widget.onMultipleImagesAdded!(value..removeAt(0));
                             },

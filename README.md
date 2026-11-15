@@ -50,3 +50,13 @@ You can use [Obtanium](https://github.com/ImranR98/Obtainium) if you want an upd
 
 ## FAQ
 You can check the [FAQ](https://github.com/resucutie/localbooru/wiki/FAQ) over here
+
+## Documentation (Fork Features & Development)
+- [AGENTS.md](AGENTS.md) — Guide for AI coding agents and contributors (conventions, native ONNX rules, known pitfalls).
+- [Architecture](docs/ARCHITECTURE.md) — Internal architecture, `repoinfo.json` + collection folder storage, WaifuTagger ONNX pipeline, and navigation.
+- [Development & Build](docs/DEVELOPMENT.md) — Local setup, Android APK builds, GitHub Actions CI, and hardware requirements for local models.
+
+### Key additions in this fork
+- **WaifuTagger / WD Tagger v3:** Local offline ONNX inference on Android (`wd-convnext-v3-mobile`, `wd-swinv2-v3-mobile`, `wd-vit-v3`) with online fallback.
+- **Batch Folder Tagging & Collections:** Import an entire folder, auto-tag all images in batch, choose between **Copy** or **Move**, and preserve the folder as a Collection inside `booru/files/<collection>/`.
+- **Swipe Gallery:** Swipe horizontally between images in both detail view and zoom view.

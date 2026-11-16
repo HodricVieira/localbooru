@@ -19,7 +19,7 @@ class VideoView extends StatefulWidget {
 
 class VideoViewState extends State<VideoView> {
     late VideoPlayerController _videoController;
-    late ChewieController _chewieController;
+    ChewieController? _chewieController;
     bool _isLoaded = false;
 
 
@@ -28,7 +28,8 @@ class VideoViewState extends State<VideoView> {
         super.initState();
 
         _videoController = VideoPlayerController.file(File(widget.path))
-            ..initialize().then((value) {        
+            ..initialize().then((value) {
+                if (!mounted) return;
                 _chewieController = ChewieController(
                     videoPlayerController: _videoController,
                     autoPlay: widget.playOnStart,
@@ -46,7 +47,7 @@ class VideoViewState extends State<VideoView> {
     @override
     void dispose() {
         _videoController.dispose();
-        _chewieController.dispose();
+        _chewieController?.dispose();
         super.dispose();
     }
 
@@ -54,10 +55,11 @@ class VideoViewState extends State<VideoView> {
     Widget build(BuildContext context) {
         return AspectRatio(
             aspectRatio: _videoController.value.aspectRatio,
-            child: _isLoaded ? VisibilityDetector(
-                key: Key("unique key"),
+            child: (_isLoaded && _chewieController != null) ? VisibilityDetector(
+                key: const Key("unique key"),
                 onVisibilityChanged: (info) {
                     debugPrint("${info.visibleFraction} of my widget is visible");
+                    if (!mounted) return;
                     if(info.visibleFraction == 0){
                         _videoController.pause();
                     }
@@ -65,7 +67,7 @@ class VideoViewState extends State<VideoView> {
                         _videoController.play();
                     }
                 },
-                child: Chewie(controller: _chewieController,)
+                child: Chewie(controller: _chewieController!,)
             ): const SizedBox(height: 0,)
         );
     }

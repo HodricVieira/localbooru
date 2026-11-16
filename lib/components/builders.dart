@@ -21,9 +21,17 @@ class _ImageInfoBuilderState extends State<ImageInfoBuilder> {
 
     void loadData() {
         _data = (() async {
-            final Uint8List bytes = await File(widget.path).readAsBytes();
+            final file = File(widget.path);
+            if (!await file.exists()) {
+                return {
+                    "image": null,
+                    "size": 0,
+                };
+            }
+            final Uint8List bytes = await file.readAsBytes();
+            final mime = lookupMimeType(widget.path);
             return {
-                "image": lookupMimeType(widget.path)!.startsWith("video/") ? null : await decodeImageFromList(bytes),
+                "image": (mime != null && mime.startsWith("video/")) ? null : await decodeImageFromList(bytes),
                 "size": bytes.lengthInBytes
             };
         })();
@@ -35,9 +43,11 @@ class _ImageInfoBuilderState extends State<ImageInfoBuilder> {
         loadData();
     }
     @override
-    void didUpdateWidget(_) {
-        super.didUpdateWidget(_);
-        loadData();
+    void didUpdateWidget(ImageInfoBuilder oldWidget) {
+        super.didUpdateWidget(oldWidget);
+        if (oldWidget.path != widget.path) {
+            loadData();
+        }
     }
     
     @override
@@ -45,8 +55,11 @@ class _ImageInfoBuilderState extends State<ImageInfoBuilder> {
         return FutureBuilder<Map>(
             future: _data,
             builder: (context, snapshot) {
-                if(snapshot.hasData || snapshot.hasError) {
-                    return widget.builder(context, snapshot.data!["size"]!, snapshot.data?["image"]);
+                if (snapshot.hasError) {
+                    return widget.builder(context, 0, null);
+                }
+                if (snapshot.hasData) {
+                    return widget.builder(context, (snapshot.data!["size"] as int?) ?? 0, snapshot.data?["image"]);
                 }
                 return const CircularProgressIndicator();
             }

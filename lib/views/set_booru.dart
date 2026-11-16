@@ -1,12 +1,12 @@
 import 'dart:convert';
 import 'dart:io';
 
-import 'package:file_picker/file_picker.dart';
 import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 import 'package:localbooru/api/index.dart';
 import 'package:localbooru/api/preset/index.dart';
+import 'package:localbooru/utils/platform_tools.dart';
 import 'package:localbooru/views/image_manager/shell.dart';
 import 'package:mime/mime.dart';
 import 'package:path/path.dart' as p;
@@ -56,7 +56,7 @@ class SetBooruScreen extends StatelessWidget{
                                             label: const Text("Select an already existing booru"),
                                             icon: const Icon(Icons.folder),
                                             onPressed: () async {
-                                                String? output = await FilePicker.platform.getDirectoryPath();
+                                                String? output = await pickDirectoryWithRealPath();
                                                 if(output == null) return;
                                                 final File repoinfo = File(p.join(output, "repoinfo.json"));
                                                 if(!(await repoinfo.exists() && await Directory(p.join(output, "files")).exists())) {
@@ -78,7 +78,7 @@ class SetBooruScreen extends StatelessWidget{
                                             label: const Text("Create a new one"),
                                             icon: const Icon(Icons.add),
                                             onPressed: () async {
-                                                String? output = await FilePicker.platform.getDirectoryPath();
+                                                String? output = await pickDirectoryWithRealPath();
                                                 if(output == null) return;
 
                                                 // Check if folder already contains loose images before creating subfolders

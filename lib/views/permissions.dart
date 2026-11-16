@@ -54,7 +54,7 @@ class _PermissionsScreenState extends State<PermissionsScreen>{
 }
 
 Future<Permission> getStoragePermission() async {
-    if (Platform.isAndroid && (await DeviceInfoPlugin().androidInfo).version.sdkInt >= 32) {
+    if (Platform.isAndroid && (await DeviceInfoPlugin().androidInfo).version.sdkInt >= 30) {
         return Permission.manageExternalStorage;
     } else {
         return Permission.storage;

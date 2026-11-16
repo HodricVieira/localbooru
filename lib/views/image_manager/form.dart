@@ -69,6 +69,7 @@ class _ImageManagerFormState extends State<ImageManagerForm> {
 
     List<String> urlList = [];
     String loadedImage = "";
+    File? originalFile;
 
     List<ImageID> relatedImages = [];
 
@@ -105,6 +106,7 @@ class _ImageManagerFormState extends State<ImageManagerForm> {
 
     void updateInformation(PresetImage preset) {
         if(preset.image != null) loadedImage = preset.image!.path;
+        originalFile = preset.originalImage ?? preset.image;
         if(preset.sources != null) urlList = preset.sources!;
         rating = preset.rating;
         if(preset.relatedImages != null) relatedImages = preset.relatedImages ?? [];
@@ -128,7 +130,7 @@ class _ImageManagerFormState extends State<ImageManagerForm> {
         final validation = _formKey.currentState!.validate();
         widget.onChanged(PresetImage(
             image: File(loadedImage),
-            originalImage: widget.preset?.originalImage ?? (loadedImage.isNotEmpty ? File(loadedImage) : null),
+            originalImage: originalFile ?? widget.preset?.originalImage ?? (loadedImage.isNotEmpty ? File(loadedImage) : null),
             tags: {
                 "generic": tagController.text.split(" ").where((e) => e.isNotEmpty).toList(),
                 "artist": artistTagController.text.split(" ").where((e) => e.isNotEmpty).toList(),
@@ -241,6 +243,7 @@ class _ImageManagerFormState extends State<ImageManagerForm> {
                                 final firstFile = value.first;
                                 setState(() {
                                     loadedImage = firstFile.path;
+                                    originalFile = firstFile;
                                     if (isVideoFile(firstFile.path)) {
                                         _addVideoTagIfMissing();
                                     }
@@ -249,7 +252,10 @@ class _ImageManagerFormState extends State<ImageManagerForm> {
                                 if(value.length > 1 && widget.onMultipleImagesAdded != null) widget.onMultipleImagesAdded!(value..removeAt(0));
                             },
                             onCompressed: (value) {
-                                setState(() => loadedImage = value);
+                                setState(() {
+                                    originalFile ??= loadedImage.isNotEmpty ? File(loadedImage) : null;
+                                    loadedImage = value;
+                                });
                                 sendPreset();
                             },
                             validator: (value) {

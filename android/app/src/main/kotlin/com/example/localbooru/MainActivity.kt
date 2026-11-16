@@ -1,11 +1,22 @@
 package com.auser.localbooru
 
+import android.app.Activity
+import android.content.ContentUris
+import android.content.Intent
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Paint
 import android.graphics.RectF
+import android.media.MediaScannerConnection
+import android.net.Uri
+import android.os.Build
+import android.os.Environment
+import android.provider.DocumentsContract
+import android.provider.MediaStore
+import android.provider.OpenableColumns
+import android.system.Os
 import ai.onnxruntime.OnnxJavaType
 import ai.onnxruntime.OnnxTensor
 import ai.onnxruntime.OrtEnvironment
@@ -15,18 +26,29 @@ import io.flutter.embedding.android.FlutterFragmentActivity
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodChannel
 import java.io.File
+import java.io.FileOutputStream
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import java.util.Collections
+import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.Executors
 
 class MainActivity: FlutterFragmentActivity() {
     private val CHANNEL = "com.auser.localbooru/waifutagger"
+    private val STORAGE_CHANNEL = "com.auser.localbooru/storage"
+    private val PICK_MEDIA_REQUEST_CODE = 9401
+    private val PICK_DIR_REQUEST_CODE = 9402
+
     private val executor = Executors.newSingleThreadExecutor()
 
     private var ortEnv: OrtEnvironment? = null
     private var ortSession: OrtSession? = null
     private var loadedModelPath: String? = null
+
+    private var pendingPickMediaResult: MethodChannel.Result? = null
+    private var pendingPickDirResult: MethodChannel.Result? = null
+    private val pickedFileUris = ConcurrentHashMap<String, Uri>()
+    private val pickedTreeUris = ConcurrentHashMap<String, Uri>()
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
@@ -68,6 +90,506 @@ class MainActivity: FlutterFragmentActivity() {
                 else -> result.notImplemented()
             }
         }
+
+        MethodChannel(flutterEngine.dartExecutor.binaryMessenger, STORAGE_CHANNEL).setMethodCallHandler { call, result ->
+            when (call.method) {
+                "pickMediaFiles" -> {
+                    if (pendingPickMediaResult != null) {
+                        result.error("ALREADY_ACTIVE", "A file picker operation is already active", null)
+                        return@setMethodCallHandler
+                    }
+                    pendingPickMediaResult = result
+                    try {
+                        val intent = Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
+                            addCategory(Intent.CATEGORY_OPENABLE)
+                            type = "*/*"
+                            putExtra(Intent.EXTRA_MIME_TYPES, arrayOf("image/*", "video/*"))
+                            putExtra(Intent.EXTRA_ALLOW_MULTIPLE, true)
+                            addFlags(
+                                Intent.FLAG_GRANT_READ_URI_PERMISSION or
+                                Intent.FLAG_GRANT_WRITE_URI_PERMISSION or
+                                Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION
+                            )
+                        }
+                        startActivityForResult(intent, PICK_MEDIA_REQUEST_CODE)
+                    } catch (t: Throwable) {
+                        pendingPickMediaResult = null
+                        result.error("PICK_ERROR", t.message, null)
+                    }
+                }
+                "pickDirectory" -> {
+                    if (pendingPickDirResult != null) {
+                        result.error("ALREADY_ACTIVE", "A directory picker operation is already active", null)
+                        return@setMethodCallHandler
+                    }
+                    pendingPickDirResult = result
+                    try {
+                        val intent = Intent(Intent.ACTION_OPEN_DOCUMENT_TREE).apply {
+                            addFlags(
+                                Intent.FLAG_GRANT_READ_URI_PERMISSION or
+                                Intent.FLAG_GRANT_WRITE_URI_PERMISSION or
+                                Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION or
+                                Intent.FLAG_GRANT_PREFIX_URI_PERMISSION
+                            )
+                        }
+                        startActivityForResult(intent, PICK_DIR_REQUEST_CODE)
+                    } catch (t: Throwable) {
+                        pendingPickDirResult = null
+                        result.error("PICK_DIR_ERROR", t.message, null)
+                    }
+                }
+                "deleteSourceFile" -> {
+                    val sourcePath = call.argument<String>("sourcePath")
+                    val targetPath = call.argument<String>("targetPath")
+                    if (sourcePath.isNullOrBlank()) {
+                        result.success(false)
+                        return@setMethodCallHandler
+                    }
+                    executor.execute {
+                        val deleted = deleteSourceFileNative(sourcePath, targetPath)
+                        runOnUiThread {
+                            result.success(deleted)
+                        }
+                    }
+                }
+                "deleteEmptyDirectory" -> {
+                    val folderPath = call.argument<String>("folderPath")
+                    if (folderPath.isNullOrBlank()) {
+                        result.success(false)
+                        return@setMethodCallHandler
+                    }
+                    executor.execute {
+                        val deleted = deleteEmptyDirectoryNative(folderPath)
+                        runOnUiThread {
+                            result.success(deleted)
+                        }
+                    }
+                }
+                else -> result.notImplemented()
+            }
+        }
+    }
+
+    @Deprecated("Deprecated in Java")
+    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
+        super.onActivityResult(requestCode, resultCode, data)
+        if (requestCode == PICK_MEDIA_REQUEST_CODE) {
+            val callback = pendingPickMediaResult
+            pendingPickMediaResult = null
+            if (callback == null) return
+            if (resultCode != Activity.RESULT_OK || data == null) {
+                callback.success(null)
+                return
+            }
+            val uris = mutableListOf<Uri>()
+            val clipData = data.clipData
+            if (clipData != null) {
+                for (i in 0 until clipData.itemCount) {
+                    clipData.getItemAt(i)?.uri?.let { uris.add(it) }
+                }
+            } else {
+                data.data?.let { uris.add(it) }
+            }
+            executor.execute {
+                val resolvedPaths = ArrayList<String>()
+                for (uri in uris) {
+                    try {
+                        contentResolver.takePersistableUriPermission(
+                            uri,
+                            Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION
+                        )
+                    } catch (_: Throwable) {}
+                    val path = resolveRealPathFromUri(uri)
+                    if (path != null) {
+                        rememberPickedFileUri(path, uri)
+                        resolvedPaths.add(path)
+                    }
+                }
+                runOnUiThread {
+                    callback.success(resolvedPaths)
+                }
+            }
+        } else if (requestCode == PICK_DIR_REQUEST_CODE) {
+            val callback = pendingPickDirResult
+            pendingPickDirResult = null
+            if (callback == null) return
+            if (resultCode != Activity.RESULT_OK || data?.data == null) {
+                callback.success(null)
+                return
+            }
+            val treeUri = data.data!!
+            executor.execute {
+                try {
+                    contentResolver.takePersistableUriPermission(
+                        treeUri,
+                        Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION
+                    )
+                } catch (_: Throwable) {}
+                val dirPath = resolveDirectoryPathFromTreeUri(treeUri)
+                if (dirPath != null) {
+                    rememberPickedTreeUri(dirPath, treeUri)
+                }
+                runOnUiThread {
+                    callback.success(dirPath)
+                }
+            }
+        }
+    }
+
+    private fun rememberPickedFileUri(path: String, uri: Uri) {
+        pickedFileUris[path] = uri
+        normalizeAndroidStoragePath(path)?.let { pickedFileUris[it] = uri }
+        try {
+            pickedFileUris[File(path).canonicalPath] = uri
+        } catch (_: Throwable) {}
+    }
+
+    private fun rememberPickedTreeUri(folderPath: String, treeUri: Uri) {
+        val clean = folderPath.trimEnd('/', '\\')
+        pickedTreeUris[clean] = treeUri
+        normalizeAndroidStoragePath(clean)?.let { pickedTreeUris[it.trimEnd('/', '\\')] = treeUri }
+        try {
+            pickedTreeUris[File(clean).canonicalPath.trimEnd('/', '\\')] = treeUri
+        } catch (_: Throwable) {}
+    }
+
+    private fun normalizeAndroidStoragePath(rawPath: String?): String? {
+        if (rawPath.isNullOrBlank()) return null
+        val path = rawPath.trim()
+        if (path.endsWith(" (deleted)")) return null
+
+        val primaryRoot = Environment.getExternalStorageDirectory().absolutePath.trimEnd('/')
+        val primaryPrefixes = listOf(
+            "/mnt/user/0/emulated/0",
+            "/mnt/pass_through/0/emulated/0",
+            "/mnt/runtime/write/emulated/0",
+            "/mnt/runtime/read/emulated/0",
+            "/mnt/runtime/default/emulated/0",
+            "/mnt/runtime/full/emulated/0",
+            "/data/media/0",
+            "/mnt/sdcard",
+            "/sdcard"
+        )
+        for (prefix in primaryPrefixes) {
+            if (path == prefix) return primaryRoot
+            if (path.startsWith("$prefix/")) {
+                return primaryRoot + path.removePrefix(prefix)
+            }
+        }
+
+        val sdVolumeRegex = Regex("^/(?:mnt/user/0|mnt/pass_through/0|mnt/runtime/(?:write|read|default|full)|mnt/media_rw)/([^/]+)(/.*)?$")
+        val match = sdVolumeRegex.matchEntire(path)
+        if (match != null) {
+            val volumeId = match.groupValues[1]
+            val rest = match.groupValues[2]
+            if (!volumeId.equals("emulated", ignoreCase = true) && !volumeId.equals("self", ignoreCase = true)) {
+                return "/storage/$volumeId$rest"
+            }
+        }
+        return path
+    }
+
+    private fun queryDataColumn(uri: Uri, selection: String?, selectionArgs: Array<String>?): String? {
+        val projection = arrayOf(MediaStore.MediaColumns.DATA)
+        try {
+            contentResolver.query(uri, projection, selection, selectionArgs, null)?.use { cursor ->
+                if (cursor.moveToFirst()) {
+                    val idx = cursor.getColumnIndex(MediaStore.MediaColumns.DATA)
+                    if (idx >= 0) {
+                        val value = cursor.getString(idx)
+                        if (!value.isNullOrBlank()) return value
+                    }
+                }
+            }
+        } catch (_: Throwable) {}
+        return null
+    }
+
+    private fun resolvePathViaProcFd(uri: Uri): String? {
+        try {
+            contentResolver.openFileDescriptor(uri, "r")?.use { pfd ->
+                val link = Os.readlink("/proc/self/fd/${pfd.fd}")
+                val normalized = normalizeAndroidStoragePath(link)
+                if (normalized != null && File(normalized).exists()) {
+                    return File(normalized).absolutePath
+                }
+                if (!link.endsWith(" (deleted)") && File(link).exists()) {
+                    return File(link).absolutePath
+                }
+            }
+        } catch (_: Throwable) {}
+        return null
+    }
+
+    private fun resolveRealPathFromUri(uri: Uri): String? {
+        if (uri.scheme.equals("file", ignoreCase = true)) {
+            val p = uri.path
+            if (!p.isNullOrBlank() && File(p).exists()) return File(p).absolutePath
+        }
+
+        if (DocumentsContract.isDocumentUri(this, uri)) {
+            try {
+                val docId = DocumentsContract.getDocumentId(uri)
+                when (uri.authority) {
+                    "com.android.externalstorage.documents" -> {
+                        val split = docId.split(":", limit = 2)
+                        val type = split[0]
+                        val rel = if (split.size > 1) split[1] else ""
+                        val candidate = if (type.equals("primary", ignoreCase = true)) {
+                            "${Environment.getExternalStorageDirectory().absolutePath}/$rel"
+                        } else {
+                            "/storage/$type/$rel"
+                        }
+                        if (File(candidate).exists()) return File(candidate).absolutePath
+                    }
+                    "com.android.providers.media.documents" -> {
+                        val split = docId.split(":", limit = 2)
+                        if (split.size == 2) {
+                            val mediaId = split[1]
+                            val contentUri = when (split[0]) {
+                                "image" -> MediaStore.Images.Media.EXTERNAL_CONTENT_URI
+                                "video" -> MediaStore.Video.Media.EXTERNAL_CONTENT_URI
+                                "audio" -> MediaStore.Audio.Media.EXTERNAL_CONTENT_URI
+                                else -> MediaStore.Files.getContentUri("external")
+                            }
+                            queryDataColumn(contentUri, "_id=?", arrayOf(mediaId))?.let {
+                                if (File(it).exists()) return File(it).absolutePath
+                            }
+                        }
+                    }
+                    "com.android.providers.downloads.documents" -> {
+                        if (docId.startsWith("raw:")) {
+                            val rawPath = docId.removePrefix("raw:")
+                            if (File(rawPath).exists()) return File(rawPath).absolutePath
+                        }
+                        val cleanId = docId.removePrefix("msf:")
+                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                            queryDataColumn(MediaStore.Downloads.EXTERNAL_CONTENT_URI, "_id=?", arrayOf(cleanId))?.let {
+                                if (File(it).exists()) return File(it).absolutePath
+                            }
+                        }
+                        queryDataColumn(MediaStore.Files.getContentUri("external"), "_id=?", arrayOf(cleanId))?.let {
+                            if (File(it).exists()) return File(it).absolutePath
+                        }
+                        val numericId = cleanId.toLongOrNull()
+                        if (numericId != null) {
+                            val downloadUriPrefixes = listOf(
+                                "content://downloads/public_downloads",
+                                "content://downloads/my_downloads",
+                                "content://downloads/all_downloads"
+                            )
+                            for (prefix in downloadUriPrefixes) {
+                                val dlUri = ContentUris.withAppendedId(Uri.parse(prefix), numericId)
+                                queryDataColumn(dlUri, null, null)?.let {
+                                    if (File(it).exists()) return File(it).absolutePath
+                                }
+                            }
+                        }
+                    }
+                }
+            } catch (_: Throwable) {}
+        }
+
+        queryDataColumn(uri, null, null)?.let {
+            if (File(it).exists()) return File(it).absolutePath
+        }
+
+        resolvePathViaProcFd(uri)?.let { return it }
+
+        // Fallback for cloud-only files that do not reside on local storage
+        return try {
+            var displayName = "picked_${System.currentTimeMillis()}"
+            contentResolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)?.use { cursor ->
+                if (cursor.moveToFirst()) {
+                    val idx = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)
+                    if (idx >= 0) {
+                        val name = cursor.getString(idx)
+                        if (!name.isNullOrBlank()) displayName = name
+                    }
+                }
+            }
+            val dir = File(cacheDir, "picked_media")
+            if (!dir.exists()) dir.mkdirs()
+            val destFile = File(dir, displayName)
+            contentResolver.openInputStream(uri)?.use { input ->
+                FileOutputStream(destFile).use { output ->
+                    input.copyTo(output)
+                }
+            }
+            if (destFile.exists() && destFile.length() > 0) destFile.absolutePath else null
+        } catch (_: Throwable) {
+            null
+        }
+    }
+
+    private fun resolveDirectoryPathFromTreeUri(treeUri: Uri): String? {
+        try {
+            val treeDocId = DocumentsContract.getTreeDocumentId(treeUri)
+            if (treeDocId.startsWith("raw:")) {
+                val raw = treeDocId.removePrefix("raw:")
+                if (File(raw).exists()) return File(raw).absolutePath
+            }
+            val split = treeDocId.split(":", limit = 2)
+            val type = split[0]
+            val rel = if (split.size > 1) split[1].trim('/') else ""
+            if (type.equals("primary", ignoreCase = true)) {
+                val base = Environment.getExternalStorageDirectory().absolutePath.trimEnd('/')
+                val candidate = if (rel.isEmpty()) base else "$base/$rel"
+                if (File(candidate).exists()) return File(candidate).absolutePath
+            } else if (split.size == 2) {
+                val candidate = if (rel.isEmpty()) "/storage/$type" else "/storage/$type/$rel"
+                if (File(candidate).exists()) return File(candidate).absolutePath
+            }
+
+            val docUri = DocumentsContract.buildDocumentUriUsingTree(treeUri, treeDocId)
+            resolvePathViaProcFd(docUri)?.let { return it }
+        } catch (_: Throwable) {}
+        return null
+    }
+
+    private fun deleteSourceFileNative(sourcePath: String, targetPath: String?): Boolean {
+        val normalizedPath = normalizeAndroidStoragePath(sourcePath) ?: sourcePath
+        val file = File(normalizedPath)
+        val canonicalPath = try { file.canonicalPath } catch (_: Throwable) { normalizedPath }
+
+        val pickedUri = pickedFileUris[sourcePath]
+            ?: pickedFileUris[normalizedPath]
+            ?: pickedFileUris[canonicalPath]
+
+        // 1. Direct filesystem deletion
+        try {
+            if (file.exists()) file.delete()
+        } catch (_: Throwable) {}
+        try {
+            val rawFile = File(sourcePath)
+            if (rawFile.exists()) rawFile.delete()
+        } catch (_: Throwable) {}
+
+        // 2. If picked via SAF document picker, also delete via DocumentsContract if needed
+        if (pickedUri != null) {
+            if (file.exists() || File(sourcePath).exists()) {
+                try {
+                    DocumentsContract.deleteDocument(contentResolver, pickedUri)
+                } catch (_: Throwable) {
+                    try { contentResolver.delete(pickedUri, null, null) } catch (_: Throwable) {}
+                }
+            }
+            pickedFileUris.remove(sourcePath)
+            pickedFileUris.remove(normalizedPath)
+            pickedFileUris.remove(canonicalPath)
+        }
+
+        // 3. If inside a picked SAF directory tree, delete via child DocumentUri if still present
+        if (file.exists()) {
+            for ((folderPath, treeUri) in pickedTreeUris.entries) {
+                val normFolder = (normalizeAndroidStoragePath(folderPath) ?: folderPath).trimEnd('/', '\\')
+                if (normalizedPath.startsWith("$normFolder/") || canonicalPath.startsWith("$normFolder/")) {
+                    val relSubpath = if (normalizedPath.startsWith("$normFolder/")) {
+                        normalizedPath.removePrefix("$normFolder/")
+                    } else {
+                        canonicalPath.removePrefix("$normFolder/")
+                    }.trimStart('/', '\\')
+                    if (relSubpath.isNotEmpty()) {
+                        try {
+                            val treeDocId = DocumentsContract.getTreeDocumentId(treeUri).trimEnd('/')
+                            val childDocId = "$treeDocId/$relSubpath"
+                            val childUri = DocumentsContract.buildDocumentUriUsingTree(treeUri, childDocId)
+                            DocumentsContract.deleteDocument(contentResolver, childUri)
+                        } catch (_: Throwable) {}
+                    }
+                }
+            }
+        }
+
+        // 4. Remove from MediaStore (also deletes the file on disk via MediaProvider if still present,
+        //    and removes stale Gallery thumbnails when already unlinked)
+        val pathsToClean = linkedSetOf(sourcePath, normalizedPath, canonicalPath)
+        val mediaUris = listOf(
+            MediaStore.Files.getContentUri("external"),
+            MediaStore.Images.Media.EXTERNAL_CONTENT_URI,
+            MediaStore.Video.Media.EXTERNAL_CONTENT_URI
+        )
+        for (p in pathsToClean) {
+            for (mediaUri in mediaUris) {
+                try {
+                    contentResolver.delete(
+                        mediaUri,
+                        "${MediaStore.MediaColumns.DATA} = ?",
+                        arrayOf(p)
+                    )
+                } catch (_: Throwable) {}
+            }
+        }
+
+        // 5. Final direct delete check
+        try {
+            if (file.exists()) file.delete()
+        } catch (_: Throwable) {}
+        try {
+            val rawFile = File(sourcePath)
+            if (rawFile.exists()) rawFile.delete()
+        } catch (_: Throwable) {}
+
+        // 6. Notify MediaScanner of both the deleted source path and new destination path
+        try {
+            val scanPaths = mutableListOf(normalizedPath)
+            if (!targetPath.isNullOrBlank()) scanPaths.add(targetPath)
+            MediaScannerConnection.scanFile(
+                applicationContext,
+                scanPaths.toTypedArray(),
+                null,
+                null
+            )
+        } catch (_: Throwable) {}
+
+        return !file.exists() && !File(sourcePath).exists()
+    }
+
+    private fun deleteEmptyDirectoryNative(folderPath: String): Boolean {
+        val normalizedPath = (normalizeAndroidStoragePath(folderPath) ?: folderPath).trimEnd('/', '\\')
+        val dir = File(normalizedPath)
+        if (!dir.exists() || !dir.isDirectory) return true
+
+        val remaining = dir.listFiles()
+        if (remaining != null && remaining.isNotEmpty()) {
+            // Only remove trivial OS metadata files (.nomedia, Thumbs.db, .DS_Store) if no other files exist
+            val trivialNames = setOf(".nomedia", "thumbs.db", ".ds_store", "desktop.ini")
+            val allTrivial = remaining.all { it.isFile && trivialNames.contains(it.name.lowercase()) }
+            if (allTrivial) {
+                for (f in remaining) {
+                    try { f.delete() } catch (_: Throwable) {}
+                }
+            } else {
+                return false
+            }
+        }
+
+        try {
+            dir.delete()
+        } catch (_: Throwable) {}
+
+        if (dir.exists()) {
+            val treeUri = pickedTreeUris[folderPath.trimEnd('/', '\\')]
+                ?: pickedTreeUris[normalizedPath]
+            if (treeUri != null) {
+                try {
+                    val treeDocId = DocumentsContract.getTreeDocumentId(treeUri)
+                    val docUri = DocumentsContract.buildDocumentUriUsingTree(treeUri, treeDocId)
+                    DocumentsContract.deleteDocument(contentResolver, docUri)
+                } catch (_: Throwable) {}
+            }
+        }
+
+        try {
+            MediaScannerConnection.scanFile(
+                applicationContext,
+                arrayOf(normalizedPath),
+                null,
+                null
+            )
+        } catch (_: Throwable) {}
+
+        return !dir.exists()
     }
 
     private fun getOrCreateSession(modelPath: String): OrtSession {

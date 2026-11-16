@@ -1,11 +1,11 @@
 import 'dart:async';
 import 'dart:io';
 import 'package:dotted_border/dotted_border.dart';
-import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:localbooru/utils/clipboard_extractor.dart';
 import 'package:localbooru/components/fileinfo.dart';
 import 'package:localbooru/components/video_view.dart';
+import 'package:localbooru/utils/platform_tools.dart';
 import 'package:mime/mime.dart';
 import 'package:super_clipboard/super_clipboard.dart';
 
@@ -45,7 +45,7 @@ class ImageUploadForm extends StatelessWidget {
                                         ),
                                         onPressed: () async {
                                             final files = await selectFileModal(context: context);
-                                            if (files != null) {
+                                            if (files != null && files.isNotEmpty) {
                                                 state.didChange(files.first.path);
                                                 onChanged(files);
                                             }
@@ -126,12 +126,14 @@ Future<List<File>?> selectFileModal({required BuildContext context}) async {
         final reader = await clipboard.read();
         final types = await obtainValidFileTypeOnClipboard(reader);
         return await Future.wait(types.map((type) => getImageFromClipboard(reader: reader, fileType: type)));
-    } else return await openFilePicker();
+    } else if (output == _PickerType.file) {
+        return await openFilePicker();
+    }
+    return null;
 }
 
 Future<List<File>?> openFilePicker() async {
-    FilePickerResult? pickerResult = await FilePicker.platform.pickFiles(type: FileType.media, allowMultiple: true);
-    return pickerResult?.files.map((file) => File(file.path!)).toList();
+    return await pickMediaFilesWithRealPaths();
 }
 
 enum _PickerType {file, clipboard}

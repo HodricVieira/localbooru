@@ -1,7 +1,6 @@
 import 'dart:io';
 
 import 'package:collection/collection.dart';
-import 'package:file_picker/file_picker.dart';
 import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
@@ -123,6 +122,8 @@ class _ImageManagerShellState extends State<ImageManagerShell> {
 
     void saveImages() async {
         setState(() => isSaving = true);
+        // Allow active preview/video widgets to unmount and release file handles before moving/deleting
+        await Future.delayed(const Duration(milliseconds: 50));
         
         try {
             final booru = await getCurrentBooru();
@@ -176,10 +177,8 @@ class _ImageManagerShellState extends State<ImageManagerShell> {
                 try {
                     final sourceDir = Directory(sourceFolderPath!);
                     if (!p.isWithin(booru.path, sourceDir.path) &&
-                        !p.equals(booru.path, sourceDir.path) &&
-                        await sourceDir.exists() &&
-                        await sourceDir.list().isEmpty) {
-                        await sourceDir.delete();
+                        !p.equals(booru.path, sourceDir.path)) {
+                        await deleteEmptySourceDirectoryAfterMove(sourceDir);
                     }
                 } catch (e) {
                     debugPrint("Could not remove empty source folder ($sourceFolderPath): $e");
@@ -221,6 +220,7 @@ class _ImageManagerShellState extends State<ImageManagerShell> {
         int compressedCount = 0;
         for (final (index, presetImage) in preset.pages!.indexed) {
             if(presetImage.image == null || isVideoFile(presetImage.image!.path)) continue;
+            preset.pages![index].originalImage ??= presetImage.image;
             final file = await compress(presetImage.image!);
             preset.pages![index].image = file;
             compressedCount++;
@@ -477,9 +477,11 @@ class _ImageManagerShellState extends State<ImageManagerShell> {
                                             leading: const Icon(Icons.add),
                                             onTap: () async {
                                                 final files = await selectFileModal(context: context);
-                                                if (files != null) {
+                                                if (files != null && files.isNotEmpty) {
                                                     if(preset.pages!.first.image == null && preset.pages!.length == 1) {
-                                                        preset.pages!.first.image = files.removeAt(0);
+                                                        final firstFile = files.removeAt(0);
+                                                        preset.pages!.first.image = firstFile;
+                                                        preset.pages!.first.originalImage = firstFile;
                                                         updatePreset.update();
                                                     }
                                                     addMultipleImages(files);
@@ -574,14 +576,31 @@ class _ImageManagerShellState extends State<ImageManagerShell> {
                     body: PopScope(
                         canPop: false,
                         onPopInvokedWithResult: (didPop, _) {
-                            if(didPop) return;
+                            if(didPop || isSaving) return;
                             if(imagePage == 0) {
                                 context.pop();
                             } else {
                                 setState(() => imagePage = 0);
                             }
                         },
-                        child: imagePage == -1
+                        child: isSaving
+                            ? Center(
+                                child: Padding(
+                                    padding: const EdgeInsets.all(24.0),
+                                    child: Column(
+                                        mainAxisSize: MainAxisSize.min,
+                                        children: [
+                                            const CircularProgressIndicator(),
+                                            const SizedBox(height: 16),
+                                            Text(
+                                                "${moveFiles ? "Movendo" : "Copiando"} imagens ($savedImages / ${preset.pages!.length})...",
+                                                style: Theme.of(context).textTheme.titleMedium,
+                                            ),
+                                        ],
+                                    ),
+                                ),
+                            )
+                            : imagePage == -1
                             ? GeneralCollectionManagerScreen(
                                 displayImages: () {
                                     final previewPages = preset.pages!
@@ -683,7 +702,7 @@ Future<PresetListManageImageSendable?> pickFolderAndPrepareSendable(
     CollectionID? targetCollectionId,
 }) async {
     try {
-        final String? folderPath = await FilePicker.platform.getDirectoryPath();
+        final String? folderPath = await pickDirectoryWithRealPath();
         if (folderPath == null) return null;
 
         final dir = Directory(folderPath);

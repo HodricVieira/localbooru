@@ -79,6 +79,8 @@ flutter build apk --release
   - Sempre use `readable.dart` / `writable.dart` (`p.joinAll` dividindo por `/`) ao resolver ou mover arquivos.
 - **Modo Mover (`file_import_mode = "move"`):**
   - Nunca apague o arquivo original antes de confirmar `copiedFile.exists() && copiedFile.length() > 0`.
+  - No Android, **nunca** use `FilePicker.platform.pickFiles` diretamente para selecionar imagens: o `file_picker` copia o arquivo selecionado para `/data/user/0/.../cache/file_picker/` e retorna o caminho do cache temporário (fazendo com que o modo *Mover* apague apenas a cópia do cache e mantenha a imagem original intacta no armazenamento do celular). Sempre use `pickMediaFilesWithRealPaths()` e `pickDirectoryWithRealPath()` (`lib/utils/platform_tools.dart` + canal nativo `com.auser.localbooru/storage` em `MainActivity.kt`), que resolvem o caminho real em `/storage/...` via `DocumentsContract`, `MediaStore` e `/proc/self/fd` (`Os.readlink`) e preservam a `Uri` SAF com permissão de escrita.
+  - Sempre remova o arquivo de origem usando `deleteSourceFileAfterMove` (`lib/utils/platform_tools.dart`), que limpa o `imageCache` do Flutter, executa deleção via `File.delete()`, `DocumentsContract.deleteDocument` e `MediaStore` (`ContentResolver.delete`), e aciona `MediaScannerConnection.scanFile` para atualizar a Galeria do Android imediatamente.
   - Quando uma imagem for comprimida antes de salvar, `PresetImage.originalImage` guarda o arquivo de origem para que ambos (temporário comprimido e original) sejam limpos corretamente no modo Mover.
   - Não apague arquivos que já estejam dentro de `booru/files/` ao apenas editar metadados (`replaceID != null`), exceto ao movê-los entre subpastas de collections.
 

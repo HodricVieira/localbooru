@@ -8,6 +8,7 @@ import 'package:localbooru/api/preset/index.dart';
 import 'package:localbooru/api/tags/index.dart';
 import 'package:localbooru/utils/constants.dart';
 import 'package:localbooru/utils/listeners.dart';
+import 'package:localbooru/utils/platform_tools.dart';
 import 'package:path/path.dart' as p;
 import 'package:shared_preferences/shared_preferences.dart';
 

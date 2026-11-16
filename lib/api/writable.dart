@@ -78,7 +78,9 @@ Future<BooruImage> insertImage(PresetImage preset, {bool notify = true, bool? mo
         : booruFilesRoot;
     await Directory(destDir).create(recursive: true);
 
-    final String sourcePath = preset.image!.path;
+    final File currentSourceFile = preset.image!;
+    final File? originalSourceFile = preset.originalImage;
+    final String sourcePath = currentSourceFile.path;
     final String targetPath = p.join(destDir, p.basename(sourcePath));
 
     // step 1: copy or move image
@@ -86,31 +88,37 @@ Future<BooruImage> insertImage(PresetImage preset, {bool notify = true, bool? mo
     if (p.equals(p.dirname(sourcePath), destDir) ||
         (cleanSubfolder == null && preset.replaceID != null && p.isWithin(booruFilesRoot, sourcePath))) {
         debugPrint("here, ${p.dirname(sourcePath)} $destDir");
-        copiedFile = preset.image!;
+        copiedFile = currentSourceFile;
     } else {
-        copiedFile = await preset.image!.copy(targetPath);
+        copiedFile = await currentSourceFile.copy(targetPath);
         final bool isMovingExistingWithinBooru = p.isWithin(booruFilesRoot, sourcePath);
         final bool isSourceOutsideBooru = !isMovingExistingWithinBooru && !p.equals(booruFilesRoot, sourcePath);
         if ((shouldMove && isSourceOutsideBooru) || isMovingExistingWithinBooru) {
             if (await copiedFile.exists() && await copiedFile.length() > 0) {
-                try {
-                    if (!p.equals(sourcePath, targetPath) && await preset.image!.exists()) {
-                        await preset.image!.delete();
+                preset.image = copiedFile;
+                preset.originalImage = copiedFile;
+
+                if (!p.equals(sourcePath, targetPath)) {
+                    final deleted = await deleteSourceFileAfterMove(
+                        currentSourceFile,
+                        targetPath: copiedFile.path,
+                    );
+                    if (!deleted) {
+                        debugPrint("Failed to delete source file after moving ($sourcePath)");
                     }
-                } catch (e) {
-                    debugPrint("Failed to delete source file after moving ($sourcePath): $e");
                 }
-                final origPath = preset.originalImage?.path;
-                if (origPath != null &&
+                final origPath = originalSourceFile?.path;
+                if (originalSourceFile != null &&
+                    origPath != null &&
                     !p.equals(origPath, sourcePath) &&
                     !p.equals(origPath, targetPath) &&
                     !p.isWithin(booruFilesRoot, origPath)) {
-                    try {
-                        if (await preset.originalImage!.exists()) {
-                            await preset.originalImage!.delete();
-                        }
-                    } catch (e) {
-                        debugPrint("Failed to delete original uncompressed file after moving ($origPath): $e");
+                    final deletedOrig = await deleteSourceFileAfterMove(
+                        originalSourceFile,
+                        targetPath: copiedFile.path,
+                    );
+                    if (!deletedOrig) {
+                        debugPrint("Failed to delete original uncompressed file after moving ($origPath)");
                     }
                 }
             }

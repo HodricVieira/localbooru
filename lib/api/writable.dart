@@ -90,7 +90,8 @@ Future<BooruImage> insertImage(PresetImage preset, {bool notify = true, bool? mo
     } else {
         copiedFile = await preset.image!.copy(targetPath);
         final bool isMovingExistingWithinBooru = p.isWithin(booruFilesRoot, sourcePath);
-        if ((shouldMove && preset.replaceID == null) || isMovingExistingWithinBooru) {
+        final bool isSourceOutsideBooru = !isMovingExistingWithinBooru && !p.equals(booruFilesRoot, sourcePath);
+        if ((shouldMove && isSourceOutsideBooru) || isMovingExistingWithinBooru) {
             if (await copiedFile.exists() && await copiedFile.length() > 0) {
                 try {
                     if (!p.equals(sourcePath, targetPath) && await preset.image!.exists()) {

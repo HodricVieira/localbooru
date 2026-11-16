@@ -153,15 +153,15 @@ class _ImageManagerShellState extends State<ImageManagerShell> {
                     final selfID = imaginaryIDs[index];
                     imagePreset.relatedImages = imaginaryIDs.where((id) => id != selfID).toList();
                 }
-                imagePreset.replaceID ??= imaginaryIDs[index];
                 imagePreset.tags ??= {"generic": ["tagme"]};
 
-                await insertImage(
+                final inserted = await insertImage(
                     imagePreset,
                     notify: false,
                     moveFile: moveFiles,
                     targetSubfolder: targetSubfolder,
                 );
+                imaginaryIDs[index] = inserted.id;
                 if (mounted) setState(() => savedImages++);
             }
 

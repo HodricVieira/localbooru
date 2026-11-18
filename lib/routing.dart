@@ -3,6 +3,7 @@ import 'package:go_router/go_router.dart';
 import 'package:localbooru/api/index.dart';
 import 'package:localbooru/api/preset/index.dart';
 import 'package:localbooru/components/builders.dart';
+import 'package:localbooru/components/dialogs/confirm_dialogs.dart';
 import 'package:localbooru/components/housings.dart';
 import 'package:localbooru/components/window_frame.dart';
 import 'package:localbooru/main.dart';
@@ -164,7 +165,10 @@ final router = GoRouter(
                                                             searcher: (index) async {
                                                                 SharedPreferences prefs = await SharedPreferences.getInstance();
                                                                 final Booru booru = await getCurrentBooru();
-                                                                final collection = (await booru.getCollection(id))!;
+                                                                final collection = await booru.getCollection(id);
+                                                                if (collection == null) {
+                                                                    return SearchableInformation(images: [], indexLength: 0);
+                                                                }
                                                                 int indexSize = prefs.getInt("page_size") ?? settingsDefaults["page_size"];
 
                                                                 // getRange
@@ -175,7 +179,7 @@ final router = GoRouter(
                                                                 if(to < 0) to = length;
                                                                 final rangedPageList = collection.pages.getRange(from, to);
                                                                 
-                                                                final List<BooruImage> images = await Future.wait(rangedPageList.map((id) async => (await booru.getImage(id))!));
+                                                                final List<BooruImage> images = (await Future.wait(rangedPageList.map((pageId) => booru.getImage(pageId)))).whereType<BooruImage>().toList();
                                                                 return SearchableInformation(images: images, indexLength: (length / indexSize).ceil());
                                                             },
                                                             index: int.parse(index ?? "0"),
@@ -184,7 +188,8 @@ final router = GoRouter(
                                                                 return BooruLoader(builder: (_, booru) => FutureBuilder(
                                                                     future: booru.getCollection(id),
                                                                     builder: (context, snapshot) {
-                                                                        if(!snapshot.hasData) return const Text("Loading");
+                                                                        if(snapshot.connectionState == ConnectionState.waiting && !snapshot.hasData) return const Text("Loading");
+                                                                        if(!snapshot.hasData || snapshot.data == null) return const Text("Collection not found");
                                                                         return ListTile(
                                                                             title: Text(snapshot.data!.name, style: const TextStyle(fontSize: 20.0)),
                                                                             subtitle: Text("Collection ID ${snapshot.data!.id} • files/${snapshot.data!.folder ?? snapshot.data!.name}", style: const TextStyle(fontSize: 14.0)),
@@ -196,10 +201,35 @@ final router = GoRouter(
                                                                 PopupMenuItem(
                                                                     child: const Text("Edit collection"),
                                                                     onTap: () => context.push("/settings/booru/collections?id=$id")
-                                                                )
+                                                                ),
+                                                                PopupMenuItem(
+                                                                    child: Text("Delete collection", style: TextStyle(color: Theme.of(context).colorScheme.error)),
+                                                                    onTap: () async {
+                                                                        final booru = await getCurrentBooru();
+                                                                        final collection = await booru.getCollection(id);
+                                                                        if (collection == null || !context.mounted) return;
+                                                                        final deleted = await confirmAndDeleteCollection(context, collection);
+                                                                        if (deleted && context.mounted) {
+                                                                            context.pop();
+                                                                        }
+                                                                    },
+                                                                ),
                                                             ],
                                                             forceOrientation: Orientation.portrait,
                                                             actions: [
+                                                                IconButton(
+                                                                    icon: const Icon(Icons.delete_outline),
+                                                                    tooltip: "Delete collection",
+                                                                    onPressed: () async {
+                                                                        final booru = await getCurrentBooru();
+                                                                        final collection = await booru.getCollection(id);
+                                                                        if (collection == null || !context.mounted) return;
+                                                                        final deleted = await confirmAndDeleteCollection(context, collection);
+                                                                        if (deleted && context.mounted) {
+                                                                            context.pop();
+                                                                        }
+                                                                    },
+                                                                ),
                                                                 IconButton(
                                                                     icon: const Icon(Icons.add_photo_alternate_outlined),
                                                                     tooltip: "Add image to collection",

@@ -5,6 +5,7 @@ import 'package:localbooru/api/index.dart';
 import 'package:localbooru/api/preset/index.dart';
 import 'package:localbooru/components/builders.dart';
 import 'package:localbooru/components/context_menu.dart';
+import 'package:localbooru/components/dialogs/confirm_dialogs.dart';
 import 'package:localbooru/components/dialogs/textfield_dialogs.dart';
 import 'package:localbooru/utils/listeners.dart';
 import 'package:localbooru/views/image_manager/shell.dart';
@@ -44,6 +45,14 @@ class _CollectionsListPageState extends State<CollectionsListPage> {
         }
     }
 
+    Future<void> _handleDeleteCollection(BooruCollection collection) async {
+        if (!mounted) return;
+        final deleted = await confirmAndDeleteCollection(context, collection);
+        if (deleted && mounted) {
+            _refreshCollections();
+        }
+    }
+
     void openContextMenu(Offset offset, BooruCollection collection) {
         final RenderObject? overlay = Overlay.of(context).context.findRenderObject();
         showMenu(
@@ -56,7 +65,11 @@ class _CollectionsListPageState extends State<CollectionsListPage> {
                 PopupMenuItem(
                     child: const Text("Edit collection"),
                     onTap: () => context.push("/settings/booru/collections?id=${collection.id}")
-                )
+                ),
+                PopupMenuItem(
+                    child: Text("Delete collection", style: TextStyle(color: Theme.of(context).colorScheme.error)),
+                    onTap: () => _handleDeleteCollection(collection),
+                ),
             ]
         );
     }
@@ -106,6 +119,22 @@ class _CollectionsListPageState extends State<CollectionsListPage> {
             body: FutureBuilder(
                 future: collectionFuture,
                 builder: (context, snapshot) {
+                    if (snapshot.hasError) {
+                        return Center(
+                            child: Column(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                    const Text("Não foi possível carregar as collections"),
+                                    const SizedBox(height: 8),
+                                    FilledButton.icon(
+                                        onPressed: _refreshCollections,
+                                        icon: const Icon(Icons.refresh),
+                                        label: const Text("Tentar novamente"),
+                                    ),
+                                ],
+                            ),
+                        );
+                    }
                     if(!snapshot.hasData) return const Center(child: CircularProgressIndicator());
                     return GridView.extent(
                         maxCrossAxisExtent: 250,
@@ -122,6 +151,8 @@ class _CollectionsListPageState extends State<CollectionsListPage> {
                                     collection: collection,
                                     booru: widget.booru,
                                     onPressed: () => context.push("/collections/${collection.id}"),
+                                    onEdit: () => context.push("/settings/booru/collections?id=${collection.id}"),
+                                    onDelete: () => _handleDeleteCollection(collection),
                                 ),
                             );
                         }).toList(),
@@ -133,11 +164,13 @@ class _CollectionsListPageState extends State<CollectionsListPage> {
 }
 
 class CollectionCard extends StatelessWidget {
-    const CollectionCard({super.key, required this.collection, required this.booru, this.onPressed});
+    const CollectionCard({super.key, required this.collection, required this.booru, this.onPressed, this.onEdit, this.onDelete});
 
     final BooruCollection collection;
     final Booru booru;
     final void Function()? onPressed;
+    final void Function()? onEdit;
+    final void Function()? onDelete;
 
     @override
     Widget build(BuildContext context) {
@@ -153,6 +186,9 @@ class CollectionCard extends StatelessWidget {
                                 return Image(
                                     image: FileImage(image.getImage()),
                                     fit: BoxFit.cover,
+                                    errorBuilder: (_, __, ___) => const Center(
+                                        child: Icon(Icons.broken_image_outlined, size: 48),
+                                    ),
                                 );
                             }
                         ) : const Center(
@@ -203,7 +239,41 @@ class CollectionCard extends StatelessWidget {
                         child: InkWell(
                             onTap: onPressed,
                         ),
-                    )
+                    ),
+                    if (onEdit != null || onDelete != null)
+                        Positioned(
+                            top: 4,
+                            right: 4,
+                            child: DecoratedBox(
+                                decoration: BoxDecoration(
+                                    color: Colors.black.withValues(alpha: 0.45),
+                                    shape: BoxShape.circle,
+                                ),
+                                child: PopupMenuButton<String>(
+                                    icon: const Icon(Icons.more_vert, color: Colors.white, size: 20),
+                                    tooltip: "Collection options",
+                                    onSelected: (value) {
+                                        if (value == "edit") onEdit?.call();
+                                        if (value == "delete") onDelete?.call();
+                                    },
+                                    itemBuilder: (ctx) => [
+                                        if (onEdit != null)
+                                            const PopupMenuItem(
+                                                value: "edit",
+                                                child: Text("Edit collection"),
+                                            ),
+                                        if (onDelete != null)
+                                            PopupMenuItem(
+                                                value: "delete",
+                                                child: Text(
+                                                    "Delete collection",
+                                                    style: TextStyle(color: Theme.of(ctx).colorScheme.error),
+                                                ),
+                                            ),
+                                    ],
+                                ),
+                            ),
+                        ),
                 ],
             ),
             // onPressed: () => context.push("/collections/${collection.id}"),

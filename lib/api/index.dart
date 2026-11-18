@@ -1,5 +1,6 @@
 library localbooru_api;
 
+import 'dart:async';
 import 'dart:io';
 import 'dart:convert';
 import 'package:collection/collection.dart';

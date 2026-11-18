@@ -1,32 +1,176 @@
 part of localbooru_api;
 
+Future<void> _writeChain = Future.value();
+
+Future<T> _enqueueWrite<T>(Future<T> Function() action) {
+    final completer = Completer<T>();
+    _writeChain = _writeChain.catchError((_) {}).then((_) async {
+        try {
+            final result = await action();
+            completer.complete(result);
+        } catch (e, st) {
+            completer.completeError(e, st);
+        }
+    });
+    return completer.future;
+}
+
 Future writeSettings(String path, Map raw, {bool notify = true}) async {
-    await File(p.join(path, "repoinfo.json")).writeAsString(const JsonEncoder.withIndent('  ').convert(raw));
+    await _enqueueWrite(() async {
+        final String encoded = const JsonEncoder.withIndent('  ').convert(raw);
+        final File targetFile = File(p.join(path, "repoinfo.json"));
+        final File tempFile = File(p.join(path, "repoinfo.json.tmp"));
+        try {
+            await tempFile.writeAsString(encoded, flush: true);
+            await tempFile.rename(targetFile.path);
+        } catch (_) {
+            await targetFile.writeAsString(encoded, flush: true);
+            if (await tempFile.exists()) {
+                try { await tempFile.delete(); } catch (_) {}
+            }
+        }
+    });
     if(notify) booruUpdateListener.update();
+}
+
+String _baseNameWithoutExtFromRel(String relFilename) {
+    final normalized = relFilename.replaceAll('\\', '/');
+    final base = normalized.split('/').last;
+    return p.basenameWithoutExtension(base);
+}
+
+Future<void> deleteImageThumbnailFile(String booruPath, String imageId, String filename) async {
+    final String base = _baseNameWithoutExtFromRel(filename);
+    final String thumbDirPath = p.join(booruPath, "thumbnails");
+    final File thumbFile = File(p.join(thumbDirPath, "${imageId}_$base.jpg"));
+    final File legacyThumbFile = File(p.join(thumbDirPath, "$base.jpg"));
+
+    for (final file in [thumbFile, legacyThumbFile]) {
+        try {
+            PaintingBinding.instance.imageCache.evict(FileImage(file));
+        } catch (_) {}
+        try {
+            if (await file.exists()) {
+                await file.delete();
+            }
+        } catch (_) {}
+    }
+}
+
+Future<void> syncThumbnailsWithFiles(String booruPath, Map<String, String> oldToNewId, List<dynamic> currentFiles) async {
+    final Directory thumbDir = Directory(p.join(booruPath, "thumbnails"));
+    if (!await thumbDir.exists()) {
+        await thumbDir.create(recursive: true);
+    }
+
+    final Map<String, String> newToOldId = {
+        for (final entry in oldToNewId.entries) entry.value: entry.key,
+    };
+
+    // Phase 1: Rename old thumbnails to temporary names so shifting IDs never collide
+    for (final rawFile in currentFiles) {
+        final Map file = rawFile as Map;
+        final String newId = file["id"].toString();
+        final String base = _baseNameWithoutExtFromRel(file["filename"].toString());
+        final String? oldId = newToOldId[newId];
+        if (oldId != null && oldId != newId) {
+            final File oldThumb = File(p.join(thumbDir.path, "${oldId}_$base.jpg"));
+            final File tmpThumb = File(p.join(thumbDir.path, ".tmp_${newId}_$base.jpg"));
+            if (await oldThumb.exists()) {
+                try {
+                    PaintingBinding.instance.imageCache.evict(FileImage(oldThumb));
+                } catch (_) {}
+                try {
+                    await oldThumb.rename(tmpThumb.path);
+                } catch (_) {}
+            }
+        }
+    }
+
+    // Phase 2: Move temporary thumbnails to their final newId names
+    for (final rawFile in currentFiles) {
+        final Map file = rawFile as Map;
+        final String newId = file["id"].toString();
+        final String base = _baseNameWithoutExtFromRel(file["filename"].toString());
+        final File tmpThumb = File(p.join(thumbDir.path, ".tmp_${newId}_$base.jpg"));
+        final File targetThumb = File(p.join(thumbDir.path, "${newId}_$base.jpg"));
+        if (await tmpThumb.exists()) {
+            try {
+                PaintingBinding.instance.imageCache.evict(FileImage(targetThumb));
+            } catch (_) {}
+            if (await targetThumb.exists()) {
+                try { await targetThumb.delete(); } catch (_) {}
+            }
+            try {
+                await tmpThumb.rename(targetThumb.path);
+            } catch (_) {}
+        }
+    }
+
+    // Phase 3: Remove any orphaned thumbnails not matching current files
+    final Set<String> validThumbNames = {
+        ".nomedia",
+        for (final rawFile in currentFiles)
+            "${(rawFile as Map)["id"]}_${_baseNameWithoutExtFromRel(rawFile["filename"].toString())}.jpg",
+    };
+    await for (final entity in thumbDir.list()) {
+        if (entity is File) {
+            final String name = p.basename(entity.path);
+            if (!validThumbNames.contains(name)) {
+                try {
+                    PaintingBinding.instance.imageCache.evict(FileImage(entity));
+                } catch (_) {}
+                try {
+                    await entity.delete();
+                } catch (_) {}
+            }
+        }
+    }
 }
 
 Map<String, dynamic> rebase(Map<String, dynamic> raw) {
     // check all files
-    if(raw["files"] == null) raw["files"] = defaultFileInfoJson["files"];
-    List files = raw["files"];
-    for(var (int index, Map file) in files.indexed) {
+    if(raw["files"] == null) raw["files"] = List.from(defaultFileInfoJson["files"]);
+    final List files = List.from(raw["files"]);
+    final Map<String, String> oldToNewId = {};
+    for(var (int index, dynamic rawFile) in files.indexed) {
+        final Map<String, dynamic> file = Map<String, dynamic>.from(rawFile as Map);
+        final String? oldId = file["id"]?.toString();
+        final String newId = index.toString();
+        if (oldId != null && oldId.isNotEmpty) {
+            oldToNewId[oldId] = newId;
+        }
         //recount all ids
-        file["id"] = index.toString();
+        file["id"] = newId;
 
-        file["tags"] = (file["tags"] as String).split(" ")
+        file["tags"] = (file["tags"] ?? "").toString().split(" ")
             .where((tag) => tag.isNotEmpty // remove empty spaces
 				&& !Metatag.isMetatag(tag) //remove any metatags on the tags
 			)
             .join(" ");
-        file["related"] = (file["related"] ?? []).where((e) => int.tryParse(e) != null && files.elementAtOrNull(int.parse(e)) != null).toList();
 
-        files[index] = file as dynamic;
+        files[index] = file;
+    }
+    for (var (int index, dynamic rawFile) in files.indexed) {
+        final Map<String, dynamic> file = Map<String, dynamic>.from(rawFile as Map);
+        file["related"] = (file["related"] ?? [])
+            .map((e) {
+                final key = e.toString();
+                if (oldToNewId.isNotEmpty) return oldToNewId[key];
+                final parsed = int.tryParse(key);
+                return (parsed != null && parsed >= 0 && parsed < files.length) ? key : null;
+            })
+            .whereType<String>()
+            .where((targetId) => targetId != file["id"])
+            .toSet()
+            .toList();
+        files[index] = file;
     }
     raw["files"] = files;
 
     // check specific tags
     if(raw["specificTags"] == null) {
-        raw["specificTags"] = defaultFileInfoJson["specificTags"];
+        raw["specificTags"] = Map<String, dynamic>.from(defaultFileInfoJson["specificTags"]);
     } else {
         // clean empty types
         for (final type in raw["specificTags"].keys) {
@@ -38,15 +182,31 @@ Map<String, dynamic> rebase(Map<String, dynamic> raw) {
 
     // check collections
     if(raw["collections"] == null) {
-        raw["collections"] = defaultFileInfoJson["collections"];
+        raw["collections"] = List.from(defaultFileInfoJson["collections"]);
     } else {
-        final List<Map<String, dynamic>> collections = List<Map<String, dynamic>>.from(raw["collections"]);
+        final List<Map<String, dynamic>> collections = List<Map<String, dynamic>>.from(
+            (raw["collections"] as List).map((e) => Map<String, dynamic>.from(e as Map))
+        );
         for (var (index, collection) in collections.indexed) {
             //recount collections
             collection["id"] = index.toString();
+            if (collection["pages"] is List) {
+                collection["pages"] = (collection["pages"] as List)
+                    .map((e) {
+                        final key = e.toString();
+                        if (oldToNewId.isNotEmpty) return oldToNewId[key];
+                        if (files.isEmpty) return null;
+                        final parsed = int.tryParse(key);
+                        return (parsed != null && parsed >= 0 && parsed < files.length) ? key : null;
+                    })
+                    .whereType<String>()
+                    .toSet()
+                    .toList();
+            }
 
-            raw["collections"][index] = collection;
+            collections[index] = collection;
         }
+        raw["collections"] = collections;
     }
 
     return raw;
@@ -211,25 +371,53 @@ Future<void> addSpecificTags(List<String> tags, {required String type, bool noti
     await writeSpecificTags(iLoveDartsTypeSystem, notify: notify);
 }
 
-Future removeImage(String id, {bool notify = true}) async {
+Future<void> removeImages(List<ImageID> ids, {bool notify = true}) async {
+    if (ids.isEmpty) return;
     final Booru booru = await getCurrentBooru();
-    final BooruImage? image = await booru.getImage(id);
-    if(image == null) throw "Image $id does not exist";
-    final file = File(image.path);
-
-    // remove file association
     var raw = await booru.getRawInfo();
-    List files = raw["files"];
+    final List files = List.from(raw["files"] ?? []);
+    final Set<String> idSet = ids.map((e) => e.toString()).toSet();
 
-    files.removeWhere((e) => e["id"] == id);
+    final List<Map> toDelete = files
+        .where((e) => idSet.contains(e["id"].toString()))
+        .cast<Map>()
+        .toList();
+
+    if (toDelete.isEmpty) {
+        if (ids.length == 1) throw "Image ${ids.first} does not exist";
+        return;
+    }
+
+    files.removeWhere((e) => idSet.contains(e["id"].toString()));
+
+    final Map<String, String> oldToNewId = {
+        for (var (int index, dynamic f) in files.indexed)
+            if ((f as Map)["id"] != null && f["id"].toString().isNotEmpty)
+                f["id"].toString(): index.toString(),
+    };
+
+    for (final fileMap in toDelete) {
+        final String oldId = fileMap["id"].toString();
+        final String rawRel = fileMap["filename"].toString().replaceAll('\\', '/');
+        final List<String> segments = rawRel.split('/').where((s) => s.isNotEmpty).toList();
+        final File imageFile = File(p.joinAll([booru.path, "files", ...segments]));
+        try {
+            PaintingBinding.instance.imageCache.evict(FileImage(imageFile));
+        } catch (_) {}
+        if (await imageFile.exists()) {
+            await imageFile.delete();
+        }
+        await deleteImageThumbnailFile(booru.path, oldId, rawRel);
+    }
+
     raw["files"] = files;
-    
-    await writeSettings(booru.path, rebase(raw), notify: notify);
+    raw = rebase(raw);
 
-    // remove file
-    await file.delete();
-
+    await syncThumbnailsWithFiles(booru.path, oldToNewId, raw["files"]);
+    await writeSettings(booru.path, raw, notify: notify);
 }
+
+Future removeImage(String id, {bool notify = true}) => removeImages([id], notify: notify);
 
 
 
@@ -372,47 +560,122 @@ Future<BooruCollection> addImagesToCollection(CollectionID collectionId, List<Im
     );
 }
 
-Future removeCollection(CollectionID id, {bool notify = true}) async {
+Future removeCollection(CollectionID id, {bool notify = true, bool deleteContent = false}) async {
     final Booru booru = await getCurrentBooru();
     final collection = await booru.getCollection(id);
     if(collection == null) throw "Collection $id does not exist";
 
     var raw = await booru.getRawInfo();
-    List collections = raw["collections"];
-    List files = raw["files"];
+    final List collections = List.from(raw["collections"] ?? []);
+    final List files = List.from(raw["files"] ?? []);
 
     final String booruFilesRoot = p.join(booru.path, "files");
     final String folderName = collection.folder ?? sanitizeCollectionFolderName(collection.name);
     final Directory collectionDir = Directory(p.join(booruFilesRoot, folderName));
 
-    // Move images from the deleted collection folder back to the root booru/files directory
-    for (final String imageId in collection.pages) {
-        final int fileIdx = files.indexWhere((f) => f["id"].toString() == imageId.toString());
-        if (fileIdx < 0) continue;
-        final String currentRel = files[fileIdx]["filename"].toString().replaceAll('\\', '/');
-        if (currentRel.startsWith("$folderName/")) {
-            final String baseName = p.basename(currentRel);
-            final File currentFile = File(p.join(collectionDir.path, baseName));
-            final File rootFile = File(p.join(booruFilesRoot, baseName));
-            if (await currentFile.exists()) {
-                await currentFile.copy(rootFile.path);
-                if (await rootFile.exists() && await rootFile.length() > 0) {
-                    try { await currentFile.delete(); } catch (_) {}
-                    files[fileIdx]["filename"] = baseName;
+    bool belongsToCollection(dynamic rawFile) {
+        final Map f = rawFile as Map;
+        final String fId = f["id"].toString();
+        final String currentRel = f["filename"].toString().replaceAll('\\', '/');
+        return collection.pages.contains(fId) || currentRel.startsWith("$folderName/");
+    }
+
+    if (deleteContent) {
+        final List<Map> filesToDelete = files.where(belongsToCollection).cast<Map>().toList();
+
+        for (final fileMap in filesToDelete) {
+            final String oldId = fileMap["id"].toString();
+            final String rawRel = fileMap["filename"].toString().replaceAll('\\', '/');
+            final List<String> segments = rawRel.split('/').where((s) => s.isNotEmpty).toList();
+            final File imageFile = File(p.joinAll([booruFilesRoot, ...segments]));
+            try {
+                PaintingBinding.instance.imageCache.evict(FileImage(imageFile));
+            } catch (_) {}
+            if (await imageFile.exists()) {
+                await imageFile.delete();
+            }
+            await deleteImageThumbnailFile(booru.path, oldId, rawRel);
+        }
+
+        files.removeWhere(belongsToCollection);
+
+        final Map<String, String> oldToNewId = {
+            for (var (int index, dynamic f) in files.indexed)
+                if ((f as Map)["id"] != null && f["id"].toString().isNotEmpty)
+                    f["id"].toString(): index.toString(),
+        };
+
+        if (await collectionDir.exists()) {
+            await collectionDir.delete(recursive: true);
+        }
+
+        collections.removeWhere((e) => e["id"].toString() == id.toString());
+        raw["files"] = files;
+        raw["collections"] = collections;
+        raw = rebase(raw);
+
+        await syncThumbnailsWithFiles(booru.path, oldToNewId, raw["files"]);
+        await writeSettings(booru.path, raw, notify: notify);
+    } else {
+        // Move images from the deleted collection folder back to the root booru/files directory
+        for (int fileIdx = 0; fileIdx < files.length; fileIdx++) {
+            final Map f = Map<String, dynamic>.from(files[fileIdx] as Map);
+            if (!belongsToCollection(f)) continue;
+            final String currentRel = f["filename"].toString().replaceAll('\\', '/');
+            if (currentRel.startsWith("$folderName/")) {
+                final String baseName = currentRel.split('/').last;
+                final File currentFile = File(p.join(collectionDir.path, baseName));
+                File rootFile = File(p.join(booruFilesRoot, baseName));
+                if (await rootFile.exists() && !p.equals(currentFile.path, rootFile.path)) {
+                    final String stem = p.basenameWithoutExtension(baseName);
+                    final String ext = p.extension(baseName);
+                    rootFile = File(p.join(booruFilesRoot, "${stem}_${f["id"]}$ext"));
+                    int suffix = 1;
+                    while (await rootFile.exists()) {
+                        rootFile = File(p.join(booruFilesRoot, "${stem}_${f["id"]}_$suffix$ext"));
+                        suffix++;
+                    }
+                }
+                if (await currentFile.exists()) {
+                    await currentFile.copy(rootFile.path);
+                    final int origLen = await currentFile.length();
+                    if (await rootFile.exists() && (await rootFile.length() > 0 || origLen == 0)) {
+                        try {
+                            PaintingBinding.instance.imageCache.evict(FileImage(currentFile));
+                        } catch (_) {}
+                        try { await currentFile.delete(); } catch (_) {}
+                        final String newBaseName = p.basename(rootFile.path);
+                        if (newBaseName != baseName) {
+                            final String oldThumbName = "${f["id"]}_${p.basenameWithoutExtension(baseName)}.jpg";
+                            final String newThumbName = "${f["id"]}_${p.basenameWithoutExtension(newBaseName)}.jpg";
+                            final File oldThumb = File(p.join(booru.path, "thumbnails", oldThumbName));
+                            final File newThumb = File(p.join(booru.path, "thumbnails", newThumbName));
+                            if (await oldThumb.exists()) {
+                                try { await oldThumb.rename(newThumb.path); } catch (_) {}
+                            }
+                        }
+                        f["filename"] = newBaseName;
+                        files[fileIdx] = f;
+                    }
                 }
             }
         }
+        try {
+            if (await collectionDir.exists()) {
+                final File nomedia = File(p.join(collectionDir.path, ".nomedia"));
+                if (await nomedia.exists()) {
+                    try { await nomedia.delete(); } catch (_) {}
+                }
+                if (await collectionDir.list().isEmpty) {
+                    await collectionDir.delete();
+                }
+            }
+        } catch (_) {}
+
+        collections.removeWhere((e) => e["id"].toString() == id.toString());
+        raw["files"] = files;
+        raw["collections"] = collections;
+
+        await writeSettings(booru.path, rebase(raw), notify: notify);
     }
-    try {
-        if (await collectionDir.exists() && await collectionDir.list().isEmpty) {
-            await collectionDir.delete();
-        }
-    } catch (_) {}
-
-    collections.removeWhere((e) => e["id"] == id);
-    raw["files"] = files;
-    raw["collections"] = collections;
-    
-    await writeSettings(booru.path, rebase(raw), notify: notify);
-
 }

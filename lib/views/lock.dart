@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_windowmanager/flutter_windowmanager.dart';
 import 'package:local_auth/local_auth.dart';
+import 'package:localbooru/api/index.dart';
 import 'package:localbooru/utils/constants.dart';
 import 'package:localbooru/utils/listeners.dart';
 import 'package:local_auth/error_codes.dart' as auth_error;
@@ -84,6 +85,9 @@ class _LockScreenState extends State<LockScreen> with WidgetsBindingObserver{
     @override
     void didChangeAppLifecycleState(AppLifecycleState state) async {
         super.didChangeAppLifecycleState(state);
+        if (state == AppLifecycleState.resumed && currentBooru != null) {
+            booruUpdateListener.update();
+        }
         if(!(await isAuthHideoutEnabled())) return;
 
         if(state != AppLifecycleState.resumed) {

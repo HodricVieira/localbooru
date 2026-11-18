@@ -51,7 +51,7 @@ List<PopupMenuEntry> imageShareItems(BooruImage image) {
     ];
 }
 
-List<PopupMenuEntry> imageManagementItems(BooruImage image, {required BuildContext context, bool doulbeExitOnDelete = false}) {
+List<PopupMenuEntry> imageManagementItems(BooruImage image, {required BuildContext context, bool doulbeExitOnDelete = false, VoidCallback? onCompleted}) {
     return [
         PopupMenuItem(
             child: const Text("Edit image metadata"),
@@ -64,6 +64,7 @@ List<PopupMenuEntry> imageManagementItems(BooruImage image, {required BuildConte
                     builder: (context) => const DeleteImageDialogue()
                 );
                 if(res == true) {
+                    onCompleted?.call();
                     if(context.mounted && doulbeExitOnDelete) context.pop(); //second to close viewer
                     await removeImage(image.id);
                 }
@@ -72,7 +73,7 @@ List<PopupMenuEntry> imageManagementItems(BooruImage image, {required BuildConte
     ];
 }
 
-List<PopupMenuEntry> multipleImageManagementItems(List<BooruImage> images, {required BuildContext context}) {
+List<PopupMenuEntry> multipleImageManagementItems(List<BooruImage> images, {required BuildContext context, VoidCallback? onCompleted}) {
     return [
         PopupMenuItem(
             child: const ListTile(
@@ -83,6 +84,7 @@ List<PopupMenuEntry> multipleImageManagementItems(List<BooruImage> images, {requ
             onTap: () async {
                 final presets = await Future.wait(images.map((img) => PresetImage.fromExistingImage(img)));
                 if (context.mounted) {
+                    onCompleted?.call();
                     context.push("/manage_image", extra: PresetListManageImageSendable(presets, autoTagOnStart: true));
                 }
             },
@@ -94,10 +96,8 @@ List<PopupMenuEntry> multipleImageManagementItems(List<BooruImage> images, {requ
                     builder: (context) => const DeleteImageDialogue()
                 );
                 if(res == true) {
-                    for(final image in images) {
-                        await removeImage(image.id, notify: false);
-                        booruUpdateListener.update();
-                    }
+                    onCompleted?.call();
+                    await removeImages(images.map((e) => e.id).toList());
                 }
             }
         ),

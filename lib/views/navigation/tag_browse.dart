@@ -94,7 +94,13 @@ class _GalleryViewerState extends State<GalleryViewer> {
             ...widget.additionalMenuOptions!
         ],
         const PopupMenuDivider(),
-        ...imageManagementItems(image, context: context),
+        ...imageManagementItems(
+            image,
+            context: context,
+            onCompleted: () {
+                if (mounted) setState(() => _selectedImages = []);
+            },
+        ),
     ];
 
     List<PopupMenuEntry> multipleContextMenuItems(List<BooruImage> images) => [
@@ -102,7 +108,13 @@ class _GalleryViewerState extends State<GalleryViewer> {
             ...widget.additionalMenuOptions!,
             const PopupMenuDivider(),
         ],
-        ...multipleImageManagementItems(images, context: context),
+        ...multipleImageManagementItems(
+            images,
+            context: context,
+            onCompleted: () {
+                if (mounted) setState(() => _selectedImages = []);
+            },
+        ),
     ];
 
     void toggleImageSelection(ImageID imageID) {
@@ -114,7 +126,22 @@ class _GalleryViewerState extends State<GalleryViewer> {
     }
 
     Future<Map> _obtainResults() async {
-        final search = await widget.searcher(_currentIndex);
+        var search = await widget.searcher(_currentIndex);
+        if (_currentIndex > 0 && _currentIndex >= search.indexLength) {
+            _currentIndex = search.indexLength > 0 ? search.indexLength - 1 : 0;
+            search = await widget.searcher(_currentIndex);
+        }
+        if (mounted && _selectedImages.isNotEmpty) {
+            final currentPageIds = search.images.map((e) => e.id).toSet();
+            final pruned = _selectedImages.where((id) => currentPageIds.contains(id)).toList();
+            if (pruned.length != _selectedImages.length) {
+                WidgetsBinding.instance.addPostFrameCallback((_) {
+                    if (mounted) {
+                        setState(() => _selectedImages = pruned);
+                    }
+                });
+            }
+        }
 
         return {
             "images": search.images,
@@ -191,7 +218,10 @@ class _GalleryViewerState extends State<GalleryViewer> {
                                                         IconButton(
                                                             icon: const Icon(Icons.edit),
                                                             onPressed: () async {
-                                                                final sendable = PresetListManageImageSendable(await Future.wait(_selectedImages.map((e) => PresetImage.fromExistingImage((snapshot.data!["images"] as List<BooruImage>).firstWhere((image) => image.id == e)))));
+                                                                final currentImages = snapshot.data!["images"] as List<BooruImage>;
+                                                                final selectedList = currentImages.where((image) => _selectedImages.contains(image.id)).toList();
+                                                                if (selectedList.isEmpty) return;
+                                                                final sendable = PresetListManageImageSendable(await Future.wait(selectedList.map((img) => PresetImage.fromExistingImage(img))));
                                                                 if(context.mounted) {
                                                                     context.push("/manage_image", extra: sendable);
                                                                     setState(() => _selectedImages = []);
@@ -199,8 +229,10 @@ class _GalleryViewerState extends State<GalleryViewer> {
                                                             },
                                                         ),
                                                         PopupMenuButton(itemBuilder: (context) {
-                                                            if(_selectedImages.length == 1) return singleContextMenuItems(snapshot.data!["images"].firstWhere((element) => element.id == _selectedImages[0]));
-                                                            else if(_selectedImages.length > 1) return multipleContextMenuItems(snapshot.data!["images"].where((element) => _selectedImages.contains(element.id)).toList());
+                                                            final currentImages = snapshot.data!["images"] as List<BooruImage>;
+                                                            final selectedList = currentImages.where((element) => _selectedImages.contains(element.id)).toList();
+                                                            if (selectedList.length == 1) return singleContextMenuItems(selectedList.first);
+                                                            else if (selectedList.length > 1) return multipleContextMenuItems(selectedList);
                                                             return [];
                                                         }, onSelected: (value) => setState(() => _selectedImages = []))
                                                     ],
@@ -250,7 +282,28 @@ class _GalleryViewerState extends State<GalleryViewer> {
                             );
                         }
                     );
-                } else if(snapshot.hasError) throw snapshot.error!;
+                } else if(snapshot.hasError) {
+                    debugPrint("GalleryViewer error: ${snapshot.error}");
+                    return Scaffold(
+                        appBar: AppBar(automaticallyImplyLeading: widget.displayBackButton),
+                        body: Center(
+                            child: Column(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                    const Icon(Icons.error_outline, size: 48),
+                                    const SizedBox(height: 12),
+                                    const Text("Não foi possível carregar as imagens"),
+                                    const SizedBox(height: 12),
+                                    FilledButton.icon(
+                                        onPressed: updateImages,
+                                        icon: const Icon(Icons.refresh),
+                                        label: const Text("Tentar novamente"),
+                                    ),
+                                ],
+                            ),
+                        ),
+                    );
+                }
                 return const Center(child: CircularProgressIndicator());
             }
         );

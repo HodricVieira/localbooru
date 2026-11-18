@@ -20,8 +20,7 @@ class CollectionsSettings extends StatefulWidget {
 
 class _CollectionsSettingsState extends State<CollectionsSettings> {
     late List<PresetCollection> collectionPresets;
-    late List<GlobalKey> valueKeys;
-    List<CollectionID> deleteCollections = [];
+    final Map<PresetCollection, GlobalKey> valueKeys = {};
     bool hasLoaded = false;
 
     @override
@@ -30,11 +29,18 @@ class _CollectionsSettingsState extends State<CollectionsSettings> {
 
         widget.booru.getAllCollections().then((collections) {
             collectionPresets = collections.map((collection) => PresetCollection.fromExistingPreset(collection)).toList();
-            valueKeys = List.generate(collections.length, (_) => GlobalKey(), growable: true);
+            for (final collection in collectionPresets) {
+                valueKeys[collection] = GlobalKey();
+            }
+            if (!mounted) return;
             setState(() => hasLoaded = true);
             if(widget.jumpToCollection != null) WidgetsBinding.instance.addPostFrameCallback((_) async {
                 await Future.delayed(const Duration(milliseconds: 100));
-                Scrollable.ensureVisible(valueKeys[int.parse(widget.jumpToCollection!)].currentContext!);
+                final targetPreset = collectionPresets.where((c) => c.id == widget.jumpToCollection).firstOrNull;
+                final targetContext = targetPreset != null ? valueKeys[targetPreset]?.currentContext : null;
+                if (targetContext != null && targetContext.mounted) {
+                    Scrollable.ensureVisible(targetContext);
+                }
             });
         });
     }
@@ -42,9 +48,6 @@ class _CollectionsSettingsState extends State<CollectionsSettings> {
     Future<void> savePresets() async{
         for(final preset in collectionPresets) {
             await insertCollection(preset);
-        }
-        for(final id in deleteCollections) {
-            await removeCollection(id);
         }
     }
 
@@ -66,21 +69,29 @@ class _CollectionsSettingsState extends State<CollectionsSettings> {
                         if(context.mounted) context.pop();
                     },
                 );
+                final preset = collectionPresets[index - 1];
                 return CollectionCard(
-                    key: (() {
-                        debugPrint("${collectionPresets[index - 1].id} ${valueKeys[int.parse("${collectionPresets[index - 1].id}")]}");
-                        return valueKeys[int.parse("${collectionPresets[index - 1].id}")];
-                    })(),
-                    collection: collectionPresets[index - 1],
+                    key: valueKeys.putIfAbsent(preset, () => GlobalKey()),
+                    collection: preset,
                     booru: widget.booru,
                     onChanged: (collection) => collectionPresets[index - 1] = collection,
-                    onDeletePressed: () {
+                    onDeletePressed: (action) async {
+                        if (preset.id != null) {
+                            await removeCollection(
+                                preset.id!,
+                                deleteContent: action == DeleteCollectionAction.deleteContent,
+                            );
+                        }
+                        if (!mounted) return;
                         setState(() {
+                            valueKeys.remove(preset);
                             collectionPresets.removeAt(index - 1);
-                            deleteCollections.add("${index - 1}");
+                            for (int i = 0; i < collectionPresets.length; i++) {
+                                collectionPresets[i].id = i.toString();
+                            }
                         });
                     },
-                    initiallyExpanded: collectionPresets[index - 1].id == widget.jumpToCollection,
+                    initiallyExpanded: preset.id == widget.jumpToCollection,
                 );
             },
         ) : const Center(child: CircularProgressIndicator(),);
@@ -94,7 +105,7 @@ class CollectionCard extends StatefulWidget {
     final Booru booru;
     final bool initiallyExpanded;
     final void Function(PresetCollection collection)? onChanged;
-    final void Function()? onDeletePressed;
+    final void Function(DeleteCollectionAction action)? onDeletePressed;
 
     @override
     State<CollectionCard> createState() => _CollectionCardState();
@@ -246,9 +257,12 @@ class _CollectionCardState extends State<CollectionCard> {
                         textColor: Theme.of(context).colorScheme.error,
                         iconColor: Theme.of(context).colorScheme.error,
                         onTap: () async {
-                            final imageList = await showDialog<bool>(context: context, builder: (context) => const DeleteImageDialogue(),);
-                            if(imageList == true) {
-                                if(widget.onDeletePressed != null) widget.onDeletePressed!();
+                            final action = await showDialog<DeleteCollectionAction>(
+                                context: context,
+                                builder: (context) => DeleteCollectionDialogue(collectionName: loadedCollection.name),
+                            );
+                            if(action != null) {
+                                if(widget.onDeletePressed != null) widget.onDeletePressed!(action);
                             }
                         },
                     ),

@@ -1,5 +1,6 @@
 import 'dart:io';
 
+import 'package:collection/collection.dart';
 import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
 import 'package:localbooru/api/index.dart';
@@ -30,6 +31,8 @@ class ImageManagerForm extends StatefulWidget {
         this.existingCollections = const [],
         this.selectedExistingCollectionId,
         this.onSelectedExistingCollectionChanged,
+        this.progressMultiAutoTag,
+        this.statusMultiAutoTag,
     });
 
     final PresetImage? preset;
@@ -45,6 +48,8 @@ class ImageManagerForm extends StatefulWidget {
     final List<BooruCollection> existingCollections;
     final CollectionID? selectedExistingCollectionId;
     final void Function(CollectionID? id)? onSelectedExistingCollectionChanged;
+    final double? progressMultiAutoTag;
+    final String? statusMultiAutoTag;
 
     @override
     State<ImageManagerForm> createState() => _ImageManagerFormState();
@@ -80,6 +85,57 @@ class _ImageManagerFormState extends State<ImageManagerForm> {
         
         if(widget.preset != null) updateInformation(widget.preset!);
         if(widget.updateNotifier != null) widget.updateNotifier!.addListener(updateListenable);
+    }
+
+    @override
+    void didUpdateWidget(covariant ImageManagerForm oldWidget) {
+        super.didUpdateWidget(oldWidget);
+        if (widget.updateNotifier != oldWidget.updateNotifier) {
+            oldWidget.updateNotifier?.removeListener(updateListenable);
+            widget.updateNotifier?.addListener(updateListenable);
+        }
+        isEditing = widget.preset?.replaceID != null;
+        if (widget.preset != null) {
+            if (widget.preset != oldWidget.preset) {
+                if ((widget.preset!.image?.path ?? "") != loadedImage ||
+                    _controllerTagsDifferFromPreset(widget.preset!) ||
+                    (_areAllTagControllersEmpty() && _hasAnyTags(widget.preset!.tags))) {
+                    updateInformation(widget.preset!);
+                }
+            } else if (_areAllTagControllersEmpty() && _hasAnyTags(widget.preset!.tags)) {
+                updateInformation(widget.preset!);
+            }
+        }
+    }
+
+    bool _areAllTagControllersEmpty() {
+        return tagController.text.trim().isEmpty &&
+            artistTagController.text.trim().isEmpty &&
+            characterTagController.text.trim().isEmpty &&
+            copyrightTagController.text.trim().isEmpty &&
+            speciesTagController.text.trim().isEmpty;
+    }
+
+    bool _hasAnyTags(Map<String, List<String>>? tags) {
+        if (tags == null) return false;
+        return tags.values.any((list) => list.any((t) => t.trim().isNotEmpty));
+    }
+
+    bool _controllerTagsDifferFromPreset(PresetImage preset) {
+        const eq = ListEquality<String>();
+        final Map<String, TextEditingController> controllersByType = {
+            "generic": tagController,
+            "artist": artistTagController,
+            "character": characterTagController,
+            "copyright": copyrightTagController,
+            "species": speciesTagController,
+        };
+        for (final entry in controllersByType.entries) {
+            final currentTags = entry.value.text.split(" ").where((e) => e.isNotEmpty).toList();
+            final presetTags = (preset.tags?[entry.key] ?? []).where((e) => e.isNotEmpty).toList();
+            if (!eq.equals(currentTags, presetTags)) return true;
+        }
+        return false;
     }
 
     @override
@@ -181,12 +237,37 @@ class _ImageManagerFormState extends State<ImageManagerForm> {
                 return set.join(" ");
             }
 
+            String mergedGeneric = mergeUnique(tagController.text, separatedTags["generic"]);
+            final String mergedArtist = mergeUnique(artistTagController.text, separatedTags["artist"]);
+            final String mergedCharacter = mergeUnique(characterTagController.text, separatedTags["character"]);
+            final String mergedCopyright = mergeUnique(copyrightTagController.text, separatedTags["copyright"]);
+            final String mergedSpecies = mergeUnique(speciesTagController.text, separatedTags["species"]);
+
+            if (mergedGeneric.isEmpty &&
+                mergedArtist.isEmpty &&
+                mergedCharacter.isEmpty &&
+                mergedCopyright.isEmpty &&
+                mergedSpecies.isEmpty) {
+                if (detailed.allTags.isNotEmpty) {
+                    final sorted = detailed.allTags.entries.toList()
+                        ..sort((a, b) => b.value.compareTo(a.value));
+                    mergedGeneric = sorted
+                        .where((e) => e.value >= 0.10)
+                        .take(15)
+                        .map((e) => e.key)
+                        .join(" ");
+                }
+                if (mergedGeneric.isEmpty) {
+                    mergedGeneric = "tagme";
+                }
+            }
+
             setState(() {
-                tagController.text = mergeUnique(tagController.text, separatedTags["generic"]);
-                artistTagController.text = mergeUnique(artistTagController.text, separatedTags["artist"]);
-                characterTagController.text = mergeUnique(characterTagController.text, separatedTags["character"]);
-                copyrightTagController.text = mergeUnique(copyrightTagController.text, separatedTags["copyright"]);
-                speciesTagController.text = mergeUnique(speciesTagController.text, separatedTags["species"]);
+                tagController.text = mergedGeneric;
+                artistTagController.text = mergedArtist;
+                characterTagController.text = mergedCharacter;
+                copyrightTagController.text = mergedCopyright;
+                speciesTagController.text = mergedSpecies;
                 if (rating == null && detailed.rating != null) {
                     rating = detailed.rating;
                 }
@@ -319,7 +400,7 @@ class _ImageManagerFormState extends State<ImageManagerForm> {
                                         ),
                                         if (widget.onAutoTagAll != null)
                                             TextButton(
-                                                onPressed: isGeneratingTags ? null : () => widget.onAutoTagAll!(),
+                                                onPressed: (isGeneratingTags || widget.progressMultiAutoTag != null) ? null : () => widget.onAutoTagAll!(),
                                                 child: const Wrap(
                                                     spacing: 6,
                                                     children: [
@@ -331,6 +412,79 @@ class _ImageManagerFormState extends State<ImageManagerForm> {
                                     ],
                                 )
                             ],
+                        ),
+                        if (widget.progressMultiAutoTag != null)
+                            Padding(
+                                padding: const EdgeInsets.only(top: 8.0, bottom: 4.0),
+                                child: Column(
+                                    crossAxisAlignment: CrossAxisAlignment.start,
+                                    children: [
+                                        if (widget.statusMultiAutoTag != null)
+                                            Text(
+                                                widget.statusMultiAutoTag!,
+                                                style: Theme.of(context).textTheme.bodySmall,
+                                            ),
+                                        const SizedBox(height: 4),
+                                        LinearProgressIndicator(value: widget.progressMultiAutoTag),
+                                    ],
+                                ),
+                            ),
+                        ListenableBuilder(
+                            listenable: Listenable.merge([
+                                tagController,
+                                artistTagController,
+                                characterTagController,
+                                copyrightTagController,
+                                speciesTagController,
+                            ]),
+                            builder: (context, _) {
+                                final categorizedControllers = <({String type, TextEditingController controller})>[
+                                    (type: "artist", controller: artistTagController),
+                                    (type: "character", controller: characterTagController),
+                                    (type: "copyright", controller: copyrightTagController),
+                                    (type: "species", controller: speciesTagController),
+                                    (type: "generic", controller: tagController),
+                                ];
+                                final chips = <Widget>[];
+                                for (final item in categorizedControllers) {
+                                    final color = SpecificTagsColors.getColor(item.type);
+                                    final tags = item.controller.text
+                                        .split(" ")
+                                        .where((e) => e.isNotEmpty)
+                                        .toList();
+                                    for (final tag in tags) {
+                                        chips.add(
+                                            InputChip(
+                                                label: Text(
+                                                    tag,
+                                                    style: TextStyle(color: color, fontSize: 12),
+                                                ),
+                                                visualDensity: VisualDensity.compact,
+                                                backgroundColor: color.withValues(alpha: 0.12),
+                                                side: BorderSide(color: color.withValues(alpha: 0.4)),
+                                                deleteIcon: Icon(Icons.close, size: 14, color: color),
+                                                onDeleted: () {
+                                                    final remaining = item.controller.text
+                                                        .split(" ")
+                                                        .where((e) => e.isNotEmpty && e != tag)
+                                                        .toList();
+                                                    item.controller.text = remaining.join(" ");
+                                                    sendPreset();
+                                                },
+                                            ),
+                                        );
+                                    }
+                                }
+                                if (chips.isEmpty) return const SizedBox.shrink();
+                                return Padding(
+                                    padding: const EdgeInsets.only(top: 8.0, bottom: 4.0),
+                                    child: Wrap(
+                                        spacing: 6,
+                                        runSpacing: 4,
+                                        children: chips,
+                                    ),
+                                );
+                            },
                         ),
                         TagField(
                             controller: tagController,

@@ -2,7 +2,10 @@ import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
 import 'package:localbooru/api/index.dart';
 import 'package:localbooru/api/preset/index.dart';
+import 'package:localbooru/components/headers.dart';
 import 'package:localbooru/components/multi_image_display.dart';
+import 'package:localbooru/utils/constants.dart';
+import 'package:path/path.dart' as p;
 
 class GeneralCollectionManagerScreen extends StatefulWidget {
     const GeneralCollectionManagerScreen({
@@ -25,6 +28,7 @@ class GeneralCollectionManagerScreen extends StatefulWidget {
         this.onMultiAutoTag,
         this.progressMultiAutoTag,
         this.statusMultiAutoTag,
+        this.onSelectImagePage,
     });
 
     final List<ImageProvider?>? displayImages;
@@ -44,6 +48,7 @@ class GeneralCollectionManagerScreen extends StatefulWidget {
     final void Function()? onMultiAutoTag;
     final double? progressMultiAutoTag;
     final String? statusMultiAutoTag;
+    final void Function(int pageIndex)? onSelectImagePage;
     final VirtualPresetCollection collection;
 
     @override
@@ -75,8 +80,13 @@ class _GeneralCollectionManagerScreenState extends State<GeneralCollectionManage
 
     @override
     Widget build(BuildContext context) {
-        return ListView(
-            children: [
+        final pages = widget.collection.pages ?? const <PresetImage>[];
+        return CustomScrollView(
+            slivers: [
+                SliverToBoxAdapter(
+                    child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.stretch,
+                        children: [
                 if(widget.displayImages != null) ...[
                     Center(
                         child: ConstrainedBox(
@@ -221,8 +231,167 @@ class _GeneralCollectionManagerScreenState extends State<GeneralCollectionManage
                             ),
                         ),
                     ],
-                )
+                ),
+                if (pages.isNotEmpty) ...[
+                    const Divider(),
+                    SmallHeader("Generated Tags by Image (${pages.length})"),
+                ],
+                        ],
+                    ),
+                ),
+                if (pages.isNotEmpty)
+                    SliverPadding(
+                        padding: const EdgeInsets.only(bottom: 16),
+                        sliver: SliverList.builder(
+                            itemCount: pages.length,
+                            itemBuilder: (context, index) => _BatchImageTagsCard(
+                                index: index,
+                                page: pages[index],
+                                isAutoTagging: widget.progressMultiAutoTag != null,
+                                onTap: widget.onSelectImagePage != null
+                                    ? () => widget.onSelectImagePage!(index)
+                                    : null,
+                            ),
+                        ),
+                    ),
             ],
+        );
+    }
+}
+
+class _BatchImageTagsCard extends StatelessWidget {
+    const _BatchImageTagsCard({
+        required this.index,
+        required this.page,
+        required this.isAutoTagging,
+        this.onTap,
+    });
+
+    final int index;
+    final PresetImage page;
+    final bool isAutoTagging;
+    final VoidCallback? onTap;
+
+    @override
+    Widget build(BuildContext context) {
+        final fileName = page.image != null ? p.basename(page.image!.path) : "Image ${index + 1}";
+        final tagsMap = page.tags ?? const <String, List<String>>{};
+        final List<({String type, String tag})> orderedTags = [];
+        for (final type in ["artist", "character", "copyright", "species", "generic"]) {
+            for (final tag in (tagsMap[type] ?? const <String>[])) {
+                if (tag.isNotEmpty) {
+                    orderedTags.add((type: type, tag: tag));
+                }
+            }
+        }
+        final ratingText = page.rating != null ? " • ${getRatingText(page.rating)}" : "";
+
+        return Card(
+            margin: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+            clipBehavior: Clip.antiAlias,
+            child: InkWell(
+                onTap: onTap,
+                child: Padding(
+                    padding: const EdgeInsets.all(12.0),
+                    child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                            Row(
+                                children: [
+                                    ClipRRect(
+                                        borderRadius: BorderRadius.circular(8),
+                                        child: SizedBox(
+                                            width: 52,
+                                            height: 52,
+                                            child: _buildThumbnail(context),
+                                        ),
+                                    ),
+                                    const SizedBox(width: 12),
+                                    Expanded(
+                                        child: Column(
+                                            crossAxisAlignment: CrossAxisAlignment.start,
+                                            children: [
+                                                Text(
+                                                    "${index + 1}. $fileName",
+                                                    maxLines: 1,
+                                                    overflow: TextOverflow.ellipsis,
+                                                    style: Theme.of(context).textTheme.titleSmall,
+                                                ),
+                                                const SizedBox(height: 2),
+                                                Text(
+                                                    "${orderedTags.isEmpty ? 'Sem tags geradas ainda' : '${orderedTags.length} tag(s)'}$ratingText",
+                                                    style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                                                        color: Theme.of(context).hintColor,
+                                                    ),
+                                                ),
+                                            ],
+                                        ),
+                                    ),
+                                    if (onTap != null)
+                                        IconButton(
+                                            icon: const Icon(Icons.edit_outlined),
+                                            tooltip: "Editar tags",
+                                            onPressed: onTap,
+                                        ),
+                                ],
+                            ),
+                            const SizedBox(height: 8),
+                            if (orderedTags.isEmpty)
+                                Text(
+                                    isAutoTagging
+                                        ? "Aguardando geração de tags..."
+                                        : "Toque para adicionar ou gerar tags",
+                                    style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                                        color: Theme.of(context).hintColor,
+                                    ),
+                                )
+                            else
+                                Wrap(
+                                    spacing: 6,
+                                    runSpacing: 4,
+                                    children: orderedTags.map((item) {
+                                        final color = SpecificTagsColors.getColor(item.type);
+                                        return Container(
+                                            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                                            decoration: BoxDecoration(
+                                                color: color.withValues(alpha: 0.12),
+                                                borderRadius: BorderRadius.circular(12),
+                                                border: Border.all(color: color.withValues(alpha: 0.4)),
+                                            ),
+                                            child: Text(
+                                                item.tag,
+                                                style: TextStyle(color: color, fontSize: 12),
+                                            ),
+                                        );
+                                    }).toList(),
+                                ),
+                        ],
+                    ),
+                ),
+            ),
+        );
+    }
+
+    Widget _buildThumbnail(BuildContext context) {
+        if (page.image == null) {
+            return ColoredBox(
+                color: Theme.of(context).colorScheme.surfaceContainerHighest,
+                child: const Icon(Icons.image_not_supported_outlined),
+            );
+        }
+        if (isVideoFile(page.image!.path)) {
+            return ColoredBox(
+                color: Theme.of(context).colorScheme.surfaceContainerHighest,
+                child: const Icon(Icons.videocam_outlined),
+            );
+        }
+        return Image(
+            image: ResizeImage(FileImage(page.image!), width: 140),
+            fit: BoxFit.cover,
+            errorBuilder: (_, __, ___) => ColoredBox(
+                color: Theme.of(context).colorScheme.surfaceContainerHighest,
+                child: const Icon(Icons.image_outlined),
+            ),
         );
     }
 }

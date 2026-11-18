@@ -20,6 +20,7 @@ class TagField extends StatefulWidget {
 class _TagFieldState extends State<TagField> {
     final FocusNode _focusNode = FocusNode();
     late TextEditingController controller;
+    bool _ownsController = false;
     GlobalKey textboxKey = GlobalKey();
 
     List<BooruTagCounterDisplay<NormalTag>> allTags = [];
@@ -27,8 +28,43 @@ class _TagFieldState extends State<TagField> {
     @override
     void initState() {
         super.initState();
-        controller = widget.controller ?? TextEditingController();
+        if (widget.controller != null) {
+            controller = widget.controller!;
+            _ownsController = false;
+        } else {
+            controller = TextEditingController();
+            _ownsController = true;
+        }
         cacheTags();
+    }
+
+    @override
+    void didUpdateWidget(covariant TagField oldWidget) {
+        super.didUpdateWidget(oldWidget);
+        if (widget.controller != oldWidget.controller) {
+            if (_ownsController) {
+                controller.dispose();
+            }
+            if (widget.controller != null) {
+                controller = widget.controller!;
+                _ownsController = false;
+            } else {
+                controller = TextEditingController();
+                _ownsController = true;
+            }
+        }
+        if (widget.type != oldWidget.type) {
+            cacheTags();
+        }
+    }
+
+    @override
+    void dispose() {
+        if (_ownsController) {
+            controller.dispose();
+        }
+        _focusNode.dispose();
+        super.dispose();
     }
 
     Future<void> cacheTags() async {

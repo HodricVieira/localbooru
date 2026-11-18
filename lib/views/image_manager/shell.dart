@@ -202,6 +202,20 @@ class _ImageManagerShellState extends State<ImageManagerShell> {
         return imagePreset.image != null ? p.basenameWithoutExtension(imagePreset.image!.path) : "Image ${preset.pages!.indexOf(imagePreset) + 1}";
     }
 
+    String _buildPageTagsSummary(PresetImage imagePreset) {
+        final tagsMap = imagePreset.tags;
+        if (tagsMap == null) return "Sem tags";
+        final List<String> allTags = [];
+        for (final type in ["artist", "character", "copyright", "species", "generic"]) {
+            for (final tag in (tagsMap[type] ?? const <String>[])) {
+                if (tag.isNotEmpty) allTags.add(tag);
+            }
+        }
+        if (allTags.isEmpty) return "Sem tags";
+        final preview = allTags.take(4).join(", ");
+        return "${allTags.length} tag(s) • $preview${allTags.length > 4 ? "..." : ""}";
+    }
+
     bool hasError() => errorOnPages.any((element) => element,);
 
     void addMultipleImages(List<File> files) {
@@ -270,6 +284,7 @@ class _ImageManagerShellState extends State<ImageManagerShell> {
                 }
                 skippedVideos++;
                 processed++;
+                updatePreset.update();
                 if (mounted) {
                     setState(() {
                         progressAutoTagImages = processed / total;
@@ -319,6 +334,7 @@ class _ImageManagerShellState extends State<ImageManagerShell> {
                 }
             }
             processed++;
+            updatePreset.update();
             if (mounted) {
                 setState(() {
                     progressAutoTagImages = processed / total;
@@ -450,6 +466,11 @@ class _ImageManagerShellState extends State<ImageManagerShell> {
                                         const Divider(),
                                         ...List.generate(preset.pages!.length, (index) => ListTile(
                                             title: Text(generateName(preset.pages![index])),
+                                            subtitle: Text(
+                                                _buildPageTagsSummary(preset.pages![index]),
+                                                maxLines: 1,
+                                                overflow: TextOverflow.ellipsis,
+                                            ),
                                             leading: Icon(preset.pages![index].image != null && isVideoFile(preset.pages![index].image!.path)
                                                 ? Icons.videocam_outlined
                                                 : Icons.image_outlined),
@@ -631,6 +652,7 @@ class _ImageManagerShellState extends State<ImageManagerShell> {
                                 onMultiAutoTag: autoTagAllImages,
                                 progressMultiAutoTag: progressAutoTagImages,
                                 statusMultiAutoTag: statusAutoTagImages,
+                                onSelectImagePage: (index) => setState(() => imagePage = index),
                             )
                             : ImageManagerForm(
                                 key: ValueKey("form_${preset.pages![imagePage].key ?? imagePage}"),
@@ -652,10 +674,11 @@ class _ImageManagerShellState extends State<ImageManagerShell> {
                                 }),
                                 onAutoTagAll: preset.pages!.length > 1
                                     ? () async {
-                                        setState(() => imagePage = -1);
                                         await autoTagAllImages();
                                     }
                                     : null,
+                                progressMultiAutoTag: progressAutoTagImages,
+                                statusMultiAutoTag: statusAutoTagImages,
                                 showRelatedImagesCard: !isCorelated,
                             ),
                     ),

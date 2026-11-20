@@ -69,16 +69,86 @@ WaifuTaggerModelInfo getWaifuTaggerModelById(String? id) {
     );
 }
 
+enum AutoTagSource { offline, online, video }
+
 class AutoTagDetailedResult {
     AutoTagDetailedResult({
         required this.allTags,
         required this.separatedTags,
         this.rating,
+        this.source = AutoTagSource.online,
     });
 
     final AccuracyTagList allTags;
     final Map<String, List<String>> separatedTags;
     final Rating? rating;
+    final AutoTagSource source;
+}
+
+class AutoTagReport {
+    const AutoTagReport({
+        required this.onlineSuccessCount,
+        required this.offlineSuccessCount,
+        required this.failedCount,
+        this.lastErrorMessage,
+    });
+
+    final int onlineSuccessCount;
+    final int offlineSuccessCount;
+    final int failedCount;
+    final String? lastErrorMessage;
+
+    int get totalProcessed => onlineSuccessCount + offlineSuccessCount + failedCount;
+}
+
+String formatAutoTagErrorMessage(Object error) {
+    final String raw = error.toString();
+    final String lower = raw.toLowerCase();
+
+    final bool isNetworkError = error is SocketException ||
+        error is TimeoutException ||
+        error is HandshakeException ||
+        error is TlsException ||
+        error is HttpException ||
+        error is http.ClientException ||
+        lower.contains("socketexception") ||
+        lower.contains("clientexception") ||
+        lower.contains("handshakeexception") ||
+        lower.contains("timeoutexception") ||
+        lower.contains("httpexception") ||
+        lower.contains("failed host lookup") ||
+        lower.contains("network is unreachable") ||
+        lower.contains("connection refused") ||
+        lower.contains("connection reset") ||
+        lower.contains("connection closed") ||
+        lower.contains("connection terminated") ||
+        lower.contains("connection timed out") ||
+        lower.contains("software caused connection abort") ||
+        lower.contains("timed out") ||
+        lower.contains("errno =");
+
+    if (isNetworkError) {
+        return "Sem conexão com a internet durante a geração online. Verifique sua conexão ou baixe um modelo offline nas Configurações.";
+    }
+
+    const List<String> onlineServerPrefixes = [
+        "Upload para WD-Tagger Space falhou",
+        "Chamada predict falhou",
+        "Nenhum caminho retornado pelo WD-Tagger Space",
+        "Erro retornado pelo WD-Tagger Space",
+        "Resposta inválida do WD-Tagger Space",
+        "Danbooru Autotagger falhou",
+        "Resposta inválida do Danbooru Autotagger",
+    ];
+    if (onlineServerPrefixes.any((prefix) => raw.contains(prefix))) {
+        return "O servidor de geração de tags online está indisponível ou instável no momento. Tente novamente mais tarde ou use um modelo offline.";
+    }
+
+    if (error is String && raw.trim().isNotEmpty) {
+        return raw;
+    }
+
+    return "Não foi possível gerar as tags automaticamente. Verifique sua conexão ou tente usar o modelo offline.";
 }
 
 class _TagVocabEntry {
@@ -317,6 +387,7 @@ Future<AutoTagDetailedResult> autoTagDetailed(File file, {double? threshold}) as
                 "copyright": [],
                 "species": [],
             },
+            source: AutoTagSource.video,
         );
     }
 
@@ -348,7 +419,12 @@ Future<AutoTagDetailedResult> autoTagDetailed(File file, {double? threshold}) as
             result = await _runOnlineWdTaggerSpace(file, modelInfo, filterThreshold);
         } catch (e) {
             debugPrint("Online WD-Tagger Space failed ($e), falling back to Danbooru Autotagger...");
-            result = await _runDanbooruFallback(file, filterThreshold);
+            try {
+                result = await _runDanbooruFallback(file, filterThreshold);
+            } catch (fallbackError) {
+                debugPrint("Danbooru Autotagger fallback failed ($fallbackError)");
+                throw formatAutoTagErrorMessage(fallbackError);
+            }
         }
     }
 
@@ -468,6 +544,7 @@ Future<AutoTagDetailedResult> _runOfflineWaifuTagger(
         allTags: allTags,
         separatedTags: separated,
         rating: _mapWdRating(ratingScores),
+        source: AutoTagSource.offline,
     );
 }
 
@@ -637,6 +714,7 @@ Future<AutoTagDetailedResult> _runOnlineWdTaggerSpace(
         allTags: allTags,
         separatedTags: separated,
         rating: _mapWdRating(ratingScores),
+        source: AutoTagSource.online,
     );
 }
 
@@ -682,6 +760,7 @@ Future<AutoTagDetailedResult> _runDanbooruFallback(File file, double filterThres
             "copyright": separated["copyright"] ?? [],
             "species": separated["species"] ?? [],
         },
+        source: AutoTagSource.online,
     );
 }
 

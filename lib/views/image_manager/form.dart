@@ -14,6 +14,7 @@ import 'package:localbooru/views/image_manager/components/list_string_text_input
 import 'package:localbooru/api/preset/index.dart';
 import 'package:localbooru/views/image_manager/components/related_images.dart';
 import 'package:localbooru/views/image_manager/components/tagfield.dart';
+import 'package:localbooru/views/image_manager/general_collection_manager.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 class ImageManagerForm extends StatefulWidget {
@@ -33,6 +34,7 @@ class ImageManagerForm extends StatefulWidget {
         this.onSelectedExistingCollectionChanged,
         this.progressMultiAutoTag,
         this.statusMultiAutoTag,
+        this.autoTagReport,
     });
 
     final PresetImage? preset;
@@ -50,6 +52,7 @@ class ImageManagerForm extends StatefulWidget {
     final void Function(CollectionID? id)? onSelectedExistingCollectionChanged;
     final double? progressMultiAutoTag;
     final String? statusMultiAutoTag;
+    final AutoTagReport? autoTagReport;
 
     @override
     State<ImageManagerForm> createState() => _ImageManagerFormState();
@@ -69,6 +72,7 @@ class _ImageManagerFormState extends State<ImageManagerForm> {
     bool isEditing = false;
     bool isGeneratingTags = false;
     bool isSaving = false;
+    AutoTagReport? _localAutoTagReport;
     
     Rating? rating;
 
@@ -224,7 +228,10 @@ class _ImageManagerFormState extends State<ImageManagerForm> {
             return;
         }
         final prefs = await SharedPreferences.getInstance();
-        setState(() => isGeneratingTags = true);
+        setState(() {
+            isGeneratingTags = true;
+            _localAutoTagReport = null;
+        });
         final double threshold = prefs.getDouble("autotag_accuracy") ?? settingsDefaults["autotag_accuracy"];
         autoTagDetailed(File(loadedImage), threshold: threshold).then((detailed) async {
             final separatedTags = detailed.separatedTags;
@@ -262,6 +269,7 @@ class _ImageManagerFormState extends State<ImageManagerForm> {
                 }
             }
 
+            if (!mounted) return;
             setState(() {
                 tagController.text = mergedGeneric;
                 artistTagController.text = mergedArtist;
@@ -271,12 +279,26 @@ class _ImageManagerFormState extends State<ImageManagerForm> {
                 if (rating == null && detailed.rating != null) {
                     rating = detailed.rating;
                 }
+                _localAutoTagReport = AutoTagReport(
+                    onlineSuccessCount: detailed.source == AutoTagSource.online ? 1 : 0,
+                    offlineSuccessCount: detailed.source == AutoTagSource.offline ? 1 : 0,
+                    failedCount: 0,
+                );
             });
             sendPreset();
         }).catchError((error, stackTrace) {
+            final friendlyError = formatAutoTagErrorMessage(error);
             if (mounted) {
+                setState(() {
+                    _localAutoTagReport = AutoTagReport(
+                        onlineSuccessCount: 0,
+                        offlineSuccessCount: 0,
+                        failedCount: 1,
+                        lastErrorMessage: friendlyError,
+                    );
+                });
                 ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-                    content: Text('Could not obtain tag information: ${error.toString()}'),
+                    content: Text(friendlyError),
                 ));
             }
         }).whenComplete(() {
@@ -429,6 +451,15 @@ class _ImageManagerFormState extends State<ImageManagerForm> {
                                     ],
                                 ),
                             ),
+                        if (!isGeneratingTags && widget.progressMultiAutoTag == null)
+                            if ((_localAutoTagReport ?? widget.autoTagReport) case final report?)
+                                Padding(
+                                    padding: const EdgeInsets.only(top: 6.0, bottom: 4.0),
+                                    child: AutoTagReportCard(
+                                        report: report,
+                                        margin: EdgeInsets.zero,
+                                    ),
+                                ),
                         ListenableBuilder(
                             listenable: Listenable.merge([
                                 tagController,

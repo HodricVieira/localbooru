@@ -28,7 +28,7 @@ Future<Booru> getCurrentBooru() async {
 
         final String repoinfoPath = p.join(booruPath, "repoinfo.json");
 
-        Map<String, dynamic> raw = jsonDecode(await File(repoinfoPath).readAsString());
+        Map<String, dynamic> raw = jsonDecode(await Zone.root.run(() => File(repoinfoPath).readAsString()));
         if(!isValidBooruModel(raw)) {
             debugPrint("Booru is not valid. Trying to fix it");
             writeSettings(booruPath, rebase(raw));

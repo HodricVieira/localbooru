@@ -42,6 +42,7 @@ class _ImageManagerShellState extends State<ImageManagerShell> {
     double? progressCompressedImages;
     double? progressAutoTagImages;
     String? statusAutoTagImages;
+    AutoTagReport? autoTagReport;
     int imagePage = 0;
 
     bool isCorelated = false;
@@ -254,9 +255,12 @@ class _ImageManagerShellState extends State<ImageManagerShell> {
         setState(() {
             progressAutoTagImages = 0.0;
             statusAutoTagImages = "0 / $total";
+            autoTagReport = null;
         });
 
         int processed = 0;
+        int onlineSucceeded = 0;
+        int offlineSucceeded = 0;
         int failed = 0;
         int skippedVideos = 0;
         String? lastError;
@@ -324,9 +328,14 @@ class _ImageManagerShellState extends State<ImageManagerShell> {
                 if (index + 1 < errorOnPages.length) {
                     errorOnPages[index + 1] = false;
                 }
+                if (detailed.source == AutoTagSource.offline) {
+                    offlineSucceeded++;
+                } else if (detailed.source == AutoTagSource.online) {
+                    onlineSucceeded++;
+                }
             } catch (e) {
                 failed++;
-                lastError = e.toString();
+                lastError = formatAutoTagErrorMessage(e);
                 debugPrint("AutoTag failed on $filePath: $e");
                 preset.pages![index].tags ??= {"generic": ["tagme"]};
                 if (index + 1 < errorOnPages.length) {
@@ -343,18 +352,24 @@ class _ImageManagerShellState extends State<ImageManagerShell> {
         }
         updatePreset.update();
         if (mounted) {
+            final report = AutoTagReport(
+                onlineSuccessCount: onlineSucceeded,
+                offlineSuccessCount: offlineSucceeded,
+                failedCount: failed,
+                lastErrorMessage: lastError,
+            );
             setState(() {
                 progressAutoTagImages = null;
                 statusAutoTagImages = null;
+                autoTagReport = report;
             });
-            final taggedImages = processed - failed - skippedVideos;
             final String message;
             if (failed == 0 && skippedVideos == 0) {
-                message = "Auto-tagging concluído para $processed imagens!";
+                message = "Auto-tagging concluído: $onlineSucceeded online, $offlineSucceeded offline.";
             } else if (failed == 0) {
-                message = "Auto-tagging concluído: $taggedImages imagem(ns) tagueada(s), $skippedVideos vídeo(s) marcado(s) com 'video'.";
+                message = "Auto-tagging concluído: $onlineSucceeded online, $offlineSucceeded offline, $skippedVideos vídeo(s) marcado(s) com 'video'.";
             } else {
-                message = "Auto-tagging: $taggedImages/$processed concluídas ($skippedVideos vídeo(s) com tag 'video', $failed falharam: $lastError)";
+                message = "Auto-tagging concluído: $onlineSucceeded online, $offlineSucceeded offline, $failed falharam. $lastError";
             }
             ScaffoldMessenger.of(context).showSnackBar(
                 SnackBar(
@@ -652,6 +667,7 @@ class _ImageManagerShellState extends State<ImageManagerShell> {
                                 onMultiAutoTag: autoTagAllImages,
                                 progressMultiAutoTag: progressAutoTagImages,
                                 statusMultiAutoTag: statusAutoTagImages,
+                                autoTagReport: autoTagReport,
                                 onSelectImagePage: (index) => setState(() => imagePage = index),
                             )
                             : ImageManagerForm(
@@ -679,6 +695,7 @@ class _ImageManagerShellState extends State<ImageManagerShell> {
                                     : null,
                                 progressMultiAutoTag: progressAutoTagImages,
                                 statusMultiAutoTag: statusAutoTagImages,
+                                autoTagReport: autoTagReport,
                                 showRelatedImagesCard: !isCorelated,
                             ),
                     ),

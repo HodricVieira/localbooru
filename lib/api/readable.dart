@@ -10,12 +10,15 @@ class Booru {
     String path;
 
     Future<Map<String, dynamic>> getRawInfo() async {
-        try {
-            await _writeChain;
-        } catch (_) {}
+        final activeWrite = _activeWrite;
+        if (activeWrite != null) {
+            try {
+                await activeWrite;
+            } catch (_) {}
+        }
 
         final File file = File(p.join(path, "repoinfo.json"));
-        final String fileinfo = await file.readAsString();
+        final String fileinfo = await Zone.root.run(() => file.readAsString());
         Map<String, dynamic> json = jsonDecode(fileinfo);
 
         final List rawCollections = List.from(json["collections"] ?? []);

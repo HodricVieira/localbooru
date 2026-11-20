@@ -2,6 +2,7 @@ import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
 import 'package:localbooru/api/index.dart';
 import 'package:localbooru/api/preset/index.dart';
+import 'package:localbooru/api/tags/index.dart';
 import 'package:localbooru/components/headers.dart';
 import 'package:localbooru/components/multi_image_display.dart';
 import 'package:localbooru/utils/constants.dart';
@@ -28,6 +29,7 @@ class GeneralCollectionManagerScreen extends StatefulWidget {
         this.onMultiAutoTag,
         this.progressMultiAutoTag,
         this.statusMultiAutoTag,
+        this.autoTagReport,
         this.onSelectImagePage,
     });
 
@@ -48,6 +50,7 @@ class GeneralCollectionManagerScreen extends StatefulWidget {
     final void Function()? onMultiAutoTag;
     final double? progressMultiAutoTag;
     final String? statusMultiAutoTag;
+    final AutoTagReport? autoTagReport;
     final void Function(int pageIndex)? onSelectImagePage;
     final VirtualPresetCollection collection;
 
@@ -159,6 +162,8 @@ class _GeneralCollectionManagerScreenState extends State<GeneralCollectionManage
                     onTap: widget.onMultiAutoTag,
                     enabled: widget.progressMultiAutoTag == null,
                 ),
+                if (widget.autoTagReport != null && widget.progressMultiAutoTag == null)
+                    AutoTagReportCard(report: widget.autoTagReport!),
                 if(widget.onMultiCompress != null) ListTile(
                     title: const Text("Compress all images"),
                     subtitle: widget.progressMultiCompress != null ? LinearProgressIndicator(value: widget.progressMultiCompress,) : const Text("Compress all images all at once"),
@@ -391,6 +396,128 @@ class _BatchImageTagsCard extends StatelessWidget {
             errorBuilder: (_, __, ___) => ColoredBox(
                 color: Theme.of(context).colorScheme.surfaceContainerHighest,
                 child: const Icon(Icons.image_outlined),
+            ),
+        );
+    }
+}
+
+class AutoTagReportCard extends StatelessWidget {
+    const AutoTagReportCard({
+        super.key,
+        required this.report,
+        this.margin = const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+    });
+
+    final AutoTagReport report;
+    final EdgeInsetsGeometry margin;
+
+    @override
+    Widget build(BuildContext context) {
+        final theme = Theme.of(context);
+        final bool hasFailure = report.failedCount > 0;
+        final String? errorMessage = report.lastErrorMessage;
+
+        return Card(
+            margin: margin,
+            child: Padding(
+                padding: const EdgeInsets.all(12.0),
+                child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                        Row(
+                            children: [
+                                Icon(
+                                    hasFailure ? Icons.info_outline : Icons.check_circle_outline,
+                                    size: 18,
+                                    color: hasFailure ? theme.colorScheme.error : theme.colorScheme.primary,
+                                ),
+                                const SizedBox(width: 8),
+                                Text(
+                                    "Resumo da geração de tags",
+                                    style: theme.textTheme.titleSmall,
+                                ),
+                            ],
+                        ),
+                        const SizedBox(height: 8),
+                        Wrap(
+                            spacing: 8,
+                            runSpacing: 6,
+                            children: [
+                                _ReportMetricChip(
+                                    icon: Icons.cloud_done_outlined,
+                                    label: "Modelo online: ${report.onlineSuccessCount}",
+                                    color: theme.colorScheme.primary,
+                                ),
+                                _ReportMetricChip(
+                                    icon: Icons.offline_pin_outlined,
+                                    label: "Modelo offline: ${report.offlineSuccessCount}",
+                                    color: theme.colorScheme.secondary,
+                                ),
+                                _ReportMetricChip(
+                                    icon: Icons.error_outline,
+                                    label: "Falharam: ${report.failedCount}",
+                                    color: hasFailure ? theme.colorScheme.error : theme.hintColor,
+                                ),
+                            ],
+                        ),
+                        if (hasFailure && errorMessage != null && errorMessage.isNotEmpty) ...[
+                            const SizedBox(height: 8),
+                            Row(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                    Icon(Icons.warning_amber_rounded, size: 16, color: theme.colorScheme.error),
+                                    const SizedBox(width: 6),
+                                    Expanded(
+                                        child: Text(
+                                            errorMessage,
+                                            style: theme.textTheme.bodySmall?.copyWith(
+                                                color: theme.colorScheme.error,
+                                            ),
+                                        ),
+                                    ),
+                                ],
+                            ),
+                        ],
+                    ],
+                ),
+            ),
+        );
+    }
+}
+
+class _ReportMetricChip extends StatelessWidget {
+    const _ReportMetricChip({
+        required this.icon,
+        required this.label,
+        required this.color,
+    });
+
+    final IconData icon;
+    final String label;
+    final Color color;
+
+    @override
+    Widget build(BuildContext context) {
+        return Container(
+            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+            decoration: BoxDecoration(
+                color: color.withValues(alpha: 0.1),
+                borderRadius: BorderRadius.circular(12),
+                border: Border.all(color: color.withValues(alpha: 0.35)),
+            ),
+            child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                    Icon(icon, size: 15, color: color),
+                    const SizedBox(width: 6),
+                    Text(
+                        label,
+                        style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                            color: color,
+                            fontWeight: FontWeight.w600,
+                        ),
+                    ),
+                ],
             ),
         );
     }

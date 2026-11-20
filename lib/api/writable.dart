@@ -1,17 +1,26 @@
 part of localbooru_api;
 
-Future<void> _writeChain = Future.value();
+Future<void>? _activeWrite;
 
 Future<T> _enqueueWrite<T>(Future<T> Function() action) {
     final completer = Completer<T>();
-    _writeChain = _writeChain.catchError((_) {}).then((_) async {
-        try {
-            final result = await action();
-            completer.complete(result);
-        } catch (e, st) {
-            completer.completeError(e, st);
-        }
+    final Future<void> prev = _activeWrite ?? Future<void>.value();
+    late final Future<void> next;
+    next = Zone.root.run(() {
+        return prev.catchError((_) {}).then((_) async {
+            try {
+                final result = await action();
+                completer.complete(result);
+            } catch (e, st) {
+                completer.completeError(e, st);
+            } finally {
+                if (identical(_activeWrite, next)) {
+                    _activeWrite = null;
+                }
+            }
+        });
     });
+    _activeWrite = next;
     return completer.future;
 }
 
